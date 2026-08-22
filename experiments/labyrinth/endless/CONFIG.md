@@ -1,137 +1,103 @@
-# The examined config
+# The default config
 
-> 2026-08-22: superseded as defaults; kept as the measurement record.
-> Current config: `playground/labyrinth/STATUS.md`.
+Every value below is a default in the code (`TileSpec` in `tiles.py`, the lighting
+constants in `render.py`), so `python stream_server.py --warm 1` with no flags *is* this
+config. Each value is here because a measurement chose it; re-run the sweep that owns a
+value before changing it.
 
-Every value below is a default in the code, so `python stream_server.py --warm 1` with no
-flags *is* this config. Each one is here because a measurement chose it, and the
-measurement is named. Where something was picked by judgement rather than by number, it
-says so.
+## Tile and rig
 
-```
-[server] seed=1000 spec=s2_4x6_p504_m400000
-[server] tile 8x8 m, 4x6=24 views at 504px, budget 400,000 splats
-[server] torch every 5.0 m, falloff k=0.45, fill=0.15, reach=22.0 m
-[server] world version e1e79cfd1aff
-```
+**`span = 2`** — 2×2 cells per tile, and the rig places a camera in every cell by
+construction. With fewer positions than cells, unobserved cells that were also walled
+off from the observed ones came back with literally zero splats — holes in the walls.
 
-## Measured behaviour of this config
+**`n_pos = 4, n_az = 4` + nadir + corner cameras** — at each cell centre: a level ring
+of 4 azimuths, one straight-down view (the level ring never sees the floor straight
+on), and one pitched-down view into each recessed corner (two walls meeting form a
+blind pocket for a centre-standing rig). The view count therefore varies with the maze
+topology, roughly 32–48 per tile.
 
-| | measured | how |
-|---|---|---|
-| coverage | 0 starved cells of 24, min **60,699** splats/cell | splat count per cell over 6 tiles |
-| geometry | **14.4 cm** median depth error | vs raycast depth, 8 cameras on a 2×2 block |
-| fill | 79.4% of ground-truth pixels have splats | same cameras |
-| brightness | median **0.449**, p90 0.782, p01 0.171 | 16 views over 4 cells |
-| throughput | **1.77 s/tile**, sustains **1.50 m/s** | 3 cold tiles, ring radius 1 |
-| determinism | rebuilt tile byte-identical | blake2b of the packed payload |
-| wire | 16.0 MB/tile | served response |
+**`n_context = 4`, `n_az_context = 3`** — cameras in the ring of cells *outside* the
+tile, looking back in, chosen by bearing (uniform in direction, not in list order) with
+visibility preferred. A tile's boundary strip is reconstructed almost entirely from the
+context camera facing it; every chunked 3DGS system in the literature gives a chunk
+more input than its own footprint and crops the output back. Against the best
+no-context rig this is better on every axis *and* faster on fewer views: depth accuracy
+23.1 → 14.6 cm, splats within 5 cm of a real surface 19.7 → 33.6%, true surface covered
+43.1 → 61.2%.
 
-Suites: `selftest_maze.py` ALL PASS · `mutation_test.sh` ALL MUTATIONS CAUGHT ·
-`endless_selftest.mjs` ALL PASS.
+**`size = 476`, `aspect = 1.0`** — the official 480 px square, snapped to the ViT's
+14 px patches. The official path feeds square input, so square is what the network has
+seen.
 
-## Why each value
+**`fov_x = 120°`** — the wider vertical field is what fixed the empty floor and
+ceiling bands at no extra pixels: frame with no geometry 14.7% → 10.0%, floor holes
+30% → 18%, and depth error *improves* 14.4 → 12.1 cm. The cost is angular resolution
+(edge energy 0.99× → 0.82× of ground truth).
 
-**`span = 2`** — the rig places `n_pos` cameras among `span²` cells. At span 3 with
-`n_pos=4` only four of nine cells were ever observed, and cells with no camera that were
-also walled off from the ones that had one came back with *zero* splats:
+## Metric frame
 
-```
-cell 0 CAM  63,671      cell 3 CAM  70,698      cell 6      0
-cell 1      33,678      cell 4      49,330      cell 7      0
-cell 2       1,522      cell 5 CAM  47,449      cell 8 CAM 63,791
-```
+**`unproject = "gt"`** — splat positions come from `gs_depth` unprojected with the
+rig's exact poses, not the model's predicted cameras (which invent ~31 cm of vertical
+spread on a rig that is level by construction). Depth error falls 31.7 → 23.8 cm at no
+cost.
 
-Those were the missing walls. At span 2 every cell has a camera by construction. The
-alternatives that also close the gap are worse:
+**`scale_from = "perview"`** — one metric scale per view, fitted against that view's
+own raycast depth. Against one global scale: F@5cm 31.1 → 40.2%, worst tile
+17.5 → 32.9%, floor error 5.6 → 3.2 cm. The worst-tile number is the point: a single
+global scale left some tiles badly stretched, and a stretched tile reads on screen as
+scatter.
 
-| config | starved | min/cell | s/tile | sustains |
-|---|---|---|---|---|
-| span3 4×6 | 6/27 | 0 | 1.85 | 2.16 m/s |
-| span3 9×4 | 0/27 | 7,349 | 2.82 | 1.42 m/s |
-| span3 9×6 | 0/27 | 5,800 | 4.68 | 0.85 m/s |
-| **span2 4×6** | **0/12** | **63,380** | 1.80 | 1.49 m/s |
+**`surface_reject_cm = 10`** — the labyrinth is ours, so a splat further than 10 cm
+from any real surface is provably wrong and dropped. 10 cm, not tighter: the rejection
+threshold and the audit tolerance are the same operation, so tightening it would let
+the filter grade itself. The gain is the fixed budget being spent on real surface
+(coverage 60.8 → 62.0%, ~160k floaters removed per tile).
 
-**`n_az = 6`, `size = 504`** — swept together against speed and geometry at span 2:
+## Pruning
 
-| | starved | s/tile | sustains | depth MAE | filled |
-|---|---|---|---|---|---|
-| 4az 504px | 0/16 | 1.22 | 2.19 m/s | 46.9 cm | 78.3% |
-| 6az 420px | 0/16 | 1.34 | 1.99 m/s | 23.9 cm | 83.3% |
-| **6az 504px** | 0/16 | 1.78 | **1.50 m/s** | **16.6 cm** | 85.3% |
-| 6az 588px | 0/16 | 2.32 | 1.15 m/s | 13.3 cm | 87.3% |
+**`max_splats = 400_000`** (voxel-prunes to ~340k, ~18 MB on the wire) — pruning is
+not a bandwidth compromise. The splat head emits one Gaussian per pixel per view, so
+the raw field is redundant by the view count and the duplicates z-fight rather than
+reinforce: unpruned tiles measure 113.8 cm median depth error against ~17 cm pruned.
+Thinning is by voxel, never at random, so coverage stays uniform at any budget.
 
-588px is better geometry and cannot keep ahead of a walk. 420px is the fallback if
-stalling matters more than fidelity.
+**`scale_quantile = 0.98`** — the official PLY writer's filter, dropping Gaussians
+stretched across depth discontinuities. Disabling it takes depth error to 200.6 cm;
+relaxing it to 0.995 fills holes by smearing (edge energy 0.99× → 0.71×), and blur
+degrades every pixel where a hole degrades one.
 
-**`max_splats = 400_000`** (voxel-prunes to ~340k) — pruning is not a bandwidth
-compromise. Unpruned tiles measure **113.8 cm** median depth error against 17.0 cm at
-1.17M and 23.7 cm at 333k: the splat head emits one Gaussian per pixel per view, so the
-raw field is redundant by `n_pos*n_az` and the duplicates z-fight rather than reinforce.
-400k is the point on that curve that also fits the browser renderer's slot.
+**`opacity_merge = "global"`, `scale_grow = True`** — the voxel survivor carries what
+the removed splats composited to: opacity `1-(1-a)^k` and radius grown `√k`. Without
+the opacity compensation walls render translucent; without the growth the voxel grid
+shows through as a lattice of gaps (see-through 16.6% → 26.1%).
 
-**Torch spacing 1.25 cells (5 m), `FALLOFF_K = 0.45`, `FILL = 0.15`** — swept by
-`bench_light.py` against a stated target, not to taste. Before: median 0.093, nothing
-above 0.21, five of sixteen views unnavigable. After: median 0.449, darkest view 0.235,
-none below 0.20, p90/p10 contrast 3.6× so torchlight still reads as torchlight.
+**`opacity_gain = 1.0`** — swept, and 1.0 won against every softening step. The
+model's own opacities are correct.
 
-**`opacity_gain = 1.0`** — swept, and 1.0 won against 0.8/0.6/0.45/0.3 (20.28 / 19.89 /
-19.41 / 18.97 / 18.41 dB). The model's own opacities are correct.
+## Lighting
 
-**Camera convention `none` (OpenCV), quats `wxyz`, colours SH-DC, opacities raw** —
-settled against a rig view the model was actually given, where the correct convention has
-to reproduce the exact input image. `none` won at 32.6 dB with 99.8% coverage.
+`REACH_M = 22`, `INTENSITY = 46`, `FALLOFF_K = 0.45`, `FILL = 0.28` — swept by
+`bench_light.py` against a stated target: no view below the model's signal floor while
+p90/p10 contrast stays high enough that torchlight still reads as torchlight. The
+brazier shading itself (low flame at 0.55 m shining upward, bright diffuse floor, dark
+ceiling) lives in `render.shade`.
 
-**Client: 18 slots, `gain=1.8`, `dilate=0.30`, `radius=1`** — 18 because a slot must hold
-the largest tile the server can emit, and `voxel_prune` accepts up to 1.1× its target, so
-a 400k budget can return ~440k. At 24 slots each holds 333,312 and every tile is silently
-truncated.
+## Client
 
-`gain` and `dilate` live in the WebGL shader, which is why they went unswept — with no
-browser there was nothing to score. Both have exact offline equivalents, so
-`bench_client.py` examines them anyway: `dilate` *is* gsplat's `eps2d` (the same 2D
-covariance dilation, and gsplat's default `rasterize_mode="classic"` leaves opacity
-uncompensated exactly as the shader does), and `gain` is a pure opacity remap applied
-before projection. Scored on exposure ratio and edge energy, not PSNR alone — PSNR
-chose blur once already.
+**20 slots × 400k = 8M splats** — a slot must hold the largest tile the server can
+emit (`voxel_prune` accepts up to 1.1× its target), and a radius-2 ring wants 25 tiles,
+so fewer, larger slots churn on every step.
 
-| gain | dilate | exposure | edge |
-|---|---|---|---|
-| 1.4 | 0.30 | 0.78× | 1.07× |
-| **1.8** | **0.30** | **0.79×** | **0.99×** |
-| 2.4 | 0.30 | 0.81× | 0.92× |
-| 3.2 | 0.30 | 0.81× | 0.87× |
-
-Above ~1.8 gain buys almost no exposure and steadily smears detail. What settles it: on
-pixels that *have* splats, exposure is 0.97× at gain 1.0, **1.01× at 1.8**, 1.02× at 3.2.
-1.8 is where the field is correctly exposed.
-
-## Not examined
-
-Stated plainly so it is not mistaken for settled:
-
-- **Nothing has been visually verified in the browser.** Every number here is headless:
-  gsplat renders, depth against the raycaster, Node against the server. The WebGL path
-  shares the wire format and the placement arithmetic, not the code.
-- **`fov_x`, `baseline`, `view_margin`** were inherited or set once and never swept.
-  (`pitch_amp` and `scale_quantile` have since been swept — see the two entries below.)
-- **14.7% of the frame has no geometry at all**, and it is *not* an artefact of scoring:
-  99.2% of unfilled pixels are inside the block, not beyond it. They cluster on the floor
-  (30%) and ceiling (25%) rather than the walls (~11%). Raising the rig's pitch makes it
-  worse, not better (fill 79% → 65%, depth 14.4 → 31 cm), so it is not simply that those
-  surfaces go unobserved. Unresolved.
-- **Relaxing `scale_quantile` fixes coverage and is refused anyway.** 0.995 takes empty
-  from 14.7% to 10.6% at +0.2 cm depth — but the splats it readmits fill those holes by
-  smearing, dropping edge energy from 0.99× of ground truth to 0.71×. Blur degrades every
-  pixel; a hole degrades one. Recorded because it is the most tempting wrong turn here.
-- **Sprint outruns the generator.** 1.50 m/s sustained against a 1.4 m/s walk is 7%
-  margin; Shift is 2.6 m/s.
-- **`seed`, `k=8` chunk size, `CHUNK`/`braid`/`room_tries`** are structural choices, not
-  tuned ones.
+**`dilate = 0.30`, `gain = 1.0`** — `dilate` is gsplat's `eps2d` (the same 2D
+covariance dilation), swept offline by `bench_client.py` on exposure ratio and edge
+energy. `gain` is 1.0 because opacity is already compensated server-side at voxel
+prune; it remains as a query-parameter escape hatch.
 
 ## Changing it
 
 Re-run the sweep that owns the value: `bench_config.py` for the rig/resolution/budget,
-`bench_light.py` for lighting. Both print the whole curve, not just a winner. The world
-`version` in `/spec` hashes seed, spec, torch spacing and every lighting constant, so a
-changed world cannot be served from a browser's year-long tile cache.
+`bench_light.py` for lighting, `bench_client.py` for the shader constants. Each prints
+the whole curve, not just a winner. The world `version` in `/spec` hashes seed, spec,
+torch spacing, lighting and the tile-generating source, so a changed world can never be
+served from a browser's year-long tile cache.
