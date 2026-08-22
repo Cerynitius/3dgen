@@ -1,5 +1,11 @@
 # Endless 3DGS labyrinth
 
+> **2026-08-22 现状以 `playground/labyrinth/STATUS.md` 为准。** 本文的迷宫算法、
+> 坐标约定、对齐方法、测量方法论仍然有效；"The measured config" 一节及
+> CONFIG.md 是历史测量记录——当前配方（官方光学 120°/476 方图、平视环+直下+角落机位、
+> 洞穴纹理+低位火盆、NaN 防线、闲时预烘）见 STATUS.md。
+
+
 An infinite, torchlit labyrinth that is reconstructed into Gaussian splats as the player
 walks, using HY-WorldMirror-2.0 feed-forward. Nothing is baked ahead of time and nothing
 is stored: every tile is a pure function of `(seed, tile index, spec)`, so walking back
