@@ -2,8 +2,8 @@
 
 > 对象：Endless Labyrinth 的 WorldMirror 逐 tile 前向。
 > 旧基线（RTX PRO 6000 单卡，~33 视角/476²）：前向 2.0-2.2s，整 tile 2.6s。
-> **现状（fastinfer.py 落地后）：前向 1.5s（默认）/ 1.4s（compile），整 tile
-> ~1.9-2.1s（33-35 视角实测），接缝质量与基线统计一致。**
+> **现状（fastinfer.py 落地后，生产=默认层）：前向 1.5s，tile 字节与基线逐字节相同，
+> 整 tile ~1.9-2.1s（33-35 视角实测）。compile（1.4s）/cudagraph 为实验 flag，不进生产。**
 
 ## 已证伪（别再做）
 
@@ -30,8 +30,9 @@
   interior 92.3/92.2%（<5cm），统计一致。
 - world version 已把 recon.py + fastinfer.py 源码和 flag 组合折进哈希，改 flag 即换版本，
   浏览器年缓存不可能吐旧 tile。
-- compile 代价：首次 3 个 build 各 ~30-43s（动态形状泛化前的编译），之后新视角数不再
-  重编译。`--warm 1` 时都发生在开端口前。长跑服务器建议开；改代码调试时关。
+- **定案：生产保持默认（head-skip + RoPE cache + sync-free），字节恒等优先。**
+  compile/cudagraph 留作实验 flag，不进生产。compile 的代价供参考：首次 3 个 build 各
+  ~30-43s（动态形状泛化前的编译），之后新视角数不再重编译；开关 flag 即换 world version。
 - cudagraph 显存：每视角数一份静态输入/输出 + 共享 pool，峰值 22.5→25.8GB，LRU 上限 12 份。
 
 ## 天花板在哪（这次量出来的）

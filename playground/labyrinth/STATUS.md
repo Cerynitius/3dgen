@@ -25,7 +25,8 @@
 - splat 位置由 gs_depth 用精确 rig 位姿反投影（`unproject="gt"`），
   逐视角尺度对 raycast 真深度拟合（`scale_from="perview"`）
 - 快路径 fastinfer.py 默认开（卸载三个无消费者的 DPT 头、RoPE 缓存、去同步）：
-  前向 2.0→1.5s，tile 字节逐字节不变；`LAB_COMPILE=1` 再到 1.4s（长跑服务器建议开），
+  前向 2.0→1.5s，tile 字节逐字节不变——**这就是保留的生产配置**。
+  `LAB_COMPILE=1`/`LAB_CUDAGRAPH=1` 留作实验 flag（compile 快 ~7% 但 splat 漂 0.2%），
   细节与实测见 `INFERENCE_OPTIMIZATION.md`
 
 **后处理（tiles.py）**
