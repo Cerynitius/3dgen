@@ -128,10 +128,11 @@ running server and take `--server`.
 
 ## Design notes
 
-`playground/labyrinth/*.md` and `experiments/labyrinth/endless/{README,CONFIG}.md`
-record why the pipeline is shaped the way it is — the camera rig, the metric scale, the
-crop and prune, the collision model, and the streaming policy. Several are written in
-Chinese.
+`playground/labyrinth/STATUS.md` is the current state of the pipeline: the camera rig
+and optics, the render and forward-pass sanitising, the server and client policies, the
+directions already ruled out with data, and the known ceilings. It is written in Chinese
+and is the document to read first. `experiments/labyrinth/endless/{README,CONFIG}.md`
+carry longer-form background.
 
 ## Licence and attribution
 
