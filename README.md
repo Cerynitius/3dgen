@@ -60,7 +60,7 @@ WorldMirror weights, which you need to obtain separately.
 
 - Python 3.11 with `torch`, `numpy`, `scipy` and the HY-World-2.0 environment
 - HY-World-2.0 checked out, with `weights/HY-WorldMirror-2.0` downloaded
-- A CUDA GPU (the reference machine builds a tile in roughly 1.9–2.5 s)
+- A CUDA GPU (the reference machine builds a tile in roughly 2.5–4 s)
 - Any modern browser with WebGL2
 
 ### Paths you must set
@@ -128,11 +128,11 @@ running server and take `--server`.
 
 ## Design notes
 
-`playground/labyrinth/STATUS.md` is the current state of the pipeline: the camera rig
-and optics, the render and forward-pass sanitising, the server and client policies, the
-directions already ruled out with data, and the known ceilings. It is written in Chinese
-and is the document to read first. `experiments/labyrinth/endless/{README,CONFIG}.md`
-carry longer-form background.
+`playground/labyrinth/STATUS.md` is the current state of the pipeline — the camera
+rig and optics, the render and forward-pass sanitising, the server and client policies,
+and the known ceilings — written in Chinese. `experiments/labyrinth/endless/README.md`
+covers the server design, and `experiments/labyrinth/endless/CONFIG.md` records the
+default configuration and the measurement behind each value.
 
 ## Licence and attribution
 
