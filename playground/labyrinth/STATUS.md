@@ -11,7 +11,7 @@
 
 **视角 rig（tiles.py）**
 - 官方光学：fov 120°、方形 476px（ViT patch14 对齐）、aspect 1.0
-- 每机位：平视环 ×4 + 直下 ×1（nadir）+ 凹角相机（两墙夹角各一，俯角 -0.5）
+- 每机位：平视环 ×4（离心 0.35 m）+ 俯视 ×1（俯角 -0.45）+ 凹角相机（两墙夹角各一，俯角 -0.5）
 - context 相机：tile 外一圈 4 机位 × 3 方位角，按方位角均匀分布、可见性优先选取
 - 视角数随迷宫拓扑变化（凹角相机取决于墙位），约 32–48
 
@@ -33,8 +33,8 @@
 - 环请求按距玩家距离排优先级，玩家脚下的 tile 永远第一
 - 闲时预烘：队列空时从玩家最后位置向外烘两圈（低优先级，真请求插队）
 - 实心 tile（>92% 占据）直接缓存空 tile
-- 单 worker（GPU 已被单 build 饱和）；启动带
-  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
+- 单 worker（GPU 已被单 build 饱和）；建议启动时设
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`（代码不设，属运行环境）
 
 **客户端（endless.js / splats.js）**
 - splat 场 8M：20 槽 × 400k，cost 驱逐；槽位复用时立即滤掉旧索引
@@ -45,7 +45,7 @@
 ## 已知上限
 
 - 单 tile 2.5–4 s（~32 视角）；预烘 + 限速器保证行走覆盖
-- 显存在当前视角数下稳定（expandable_segments）
+- 显存在当前视角数下稳定（配合 expandable_segments 启动项）
 - 纹理"油画感"是前向 splat 重建的本性，模型不换即此水准
 
 ## 下一步

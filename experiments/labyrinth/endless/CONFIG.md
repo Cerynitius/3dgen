@@ -11,11 +11,12 @@ value before changing it.
 construction. With fewer positions than cells, unobserved cells that were also walled
 off from the observed ones came back with literally zero splats — holes in the walls.
 
-**`n_pos = 4, n_az = 4` + nadir + corner cameras** — at each cell centre: a level ring
-of 4 azimuths, one straight-down view (the level ring never sees the floor straight
-on), and one pitched-down view into each recessed corner (two walls meeting form a
-blind pocket for a centre-standing rig). The view count therefore varies with the maze
-topology, roughly 32–48 per tile.
+**`n_pos = 4, n_az = 4` + nadir + corner cameras** — at each cell: a level ring of 4
+azimuths stepped `baseline = 0.35` m off the centre, one downward-pitched view from the
+centre (−0.45 rad — the level ring never sees the floor head-on), and one view pitched
+−0.5 rad into each recessed corner (two walls meeting form a blind pocket for a
+centre-standing rig). The view count therefore varies with the maze topology, roughly
+32–48 per tile.
 
 **`n_context = 4`, `n_az_context = 3`** — cameras in the ring of cells *outside* the
 tile, looking back in, chosen by bearing (uniform in direction, not in list order) with
@@ -77,11 +78,15 @@ model's own opacities are correct.
 
 ## Lighting
 
-`REACH_M = 22`, `INTENSITY = 46`, `FALLOFF_K = 0.45`, `FILL = 0.28` — swept by
-`bench_light.py` against a stated target: no view below the model's signal floor while
-p90/p10 contrast stays high enough that torchlight still reads as torchlight. The
-brazier shading itself (low flame at 0.55 m shining upward, bright diffuse floor, dark
-ceiling) lives in `render.shade`.
+The active model in `render.shade` is the cave variant: a flat diffuse base per
+surface (walls 0.45, floor 1.05, ceiling 0.40 — the floor is the player's ground truth,
+the ceiling is deliberately dark), plus the 8 nearest braziers with the flame at
+0.55 m shining upward, a soft `1/(1+(0.5d)²)·exp(−(d/14)²)` falloff, and a light pool
+hugging the floor line on walls. Its constants are inline in `shade`; the sweep target
+was no view below the model's signal floor while contrast still reads as torchlight.
+`LIGHT_CAP = 48` culls the window's torch list per view. The module-level
+`REACH_M` / `INTENSITY` / `FALLOFF_K` / `AMBIENT` / `FILL` constants are not used by
+this path — they persist because the world `version` hashes them.
 
 ## Client
 

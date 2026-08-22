@@ -104,8 +104,8 @@ with `?server=`:
 http://localhost:8090/endless.html?server=http://gpu-box:8092
 ```
 
-Other query parameters: `radius` (ring radius, 0–4), `gain`, `dilate`, `fov`, `speed`.
-All are range-checked; an out-of-range or non-numeric value falls back to the default.
+Other query parameters: `radius` (ring radius, 0–4), `gain`, `dilate`. All are
+range-checked; an out-of-range or non-numeric value falls back to the default.
 
 Click to capture the pointer, `W`/`A`/`S`/`D` to walk, `Shift` to run.
 

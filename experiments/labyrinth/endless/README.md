@@ -108,8 +108,8 @@ python walk_test.py --steps 70 --speed 1.4   # end-to-end, at walking pace
 `walk_test.py` follows a BFS route to a distant goal rather than wandering, and lets
 real time pass between steps at `--speed` m/s, so it measures a real walker rather than
 an infinitely fast one. It asserts that every tile the player stood in was delivered,
-the cache stays inside its bound, a rebuilt tile is byte-identical, and a tile 48 km
-out costs the same as one at the origin.
+the cache stays inside its bound, a rebuilt tile is byte-identical, a tile 48 km out
+costs the same as one at the origin, and the generator keeps ahead of the walk.
 
 Client contract: splat means are **tile-relative**; add `origin_m` from the tile's
 metadata to place it. Stride is 14 float32:
