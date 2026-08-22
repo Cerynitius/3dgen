@@ -59,6 +59,10 @@ def infer(batch, extr, intr, use_priors=True):
     """
     pipe = get_pipeline()
     device = pipe.device
+    # a handful of NaN pixels in one view (render glitch at grazing rays) poison the
+    # ENTIRE forward -- every mean comes back NaN and the alignment SVD dies on it.
+    # 10 pixels out of 11M are noise either way; neutralise them instead.
+    batch = torch.nan_to_num(batch, nan=0.0, posinf=1.0, neginf=0.0)
     views = {"img": batch.to(device)}
     cond_flags = [0, 0, 0]
     if use_priors:

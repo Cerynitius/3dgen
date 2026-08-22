@@ -407,38 +407,38 @@ def render_rig(maze, tc, tr, spec, device=R.DEV):
                               ((px - gx_c) * CELL_M, EYE_H * CELL_M,
                                (pz - gz_c) * CELL_M)))
 
-            if kind is None:
-                # one nadir per interior position (variant G): the floor is the
-                # player's ground truth and the level ring never sees it straight on
-                imgs.append(R.render_view_tensor(win, (ox, EYE_H, oz), float(aim),
+        if kind is None:
+            # one nadir per interior position (variant G): the floor is the
+            # player's ground truth and the level ring never sees it straight on
+            imgs.append(R.render_view_tensor(win, (ox, EYE_H, oz), float(aim),
+                                             -spec.pitch_amp, width=W, height=H,
+                                             fov_x=spec.fov_x))
+            depths.append((len(imgs) - 1,
+                           R.render_depth_tensor(win, (ox, EYE_H, oz), float(aim),
                                                  -spec.pitch_amp, width=W, height=H,
-                                                 fov_x=spec.fov_x))
-                depths.append((len(imgs) - 1,
-                               R.render_depth_tensor(win, (ox, EYE_H, oz), float(aim),
-                                                     -spec.pitch_amp, width=W, height=H,
-                                                     fov_x=spec.fov_x)))
-                c2ws.append(R.c2w(float(aim), -spec.pitch_amp,
-                                  ((ox - gx_c) * CELL_M, EYE_H * CELL_M,
-                                   (oz - gz_c) * CELL_M)))
+                                                 fov_x=spec.fov_x)))
+            c2ws.append(R.c2w(float(aim), -spec.pitch_amp,
+                              ((ox - gx_c) * CELL_M, EYE_H * CELL_M,
+                               (oz - gz_c) * CELL_M)))
 
-                # variant J: corner cameras. Two walls meeting = blind pocket for the
-                # centre-standing rig. One view per recessed corner, aimed in, pitched down.
-                cc, rr = cell
-                for dc, dr, dN, dE in ((0.5, -0.5, 0, 1), (0.5, 0.5, 2, 1),
-                                       (-0.5, 0.5, 2, 3), (-0.5, -0.5, 0, 3)):
-                    if maze.has_wall(cc, rr, dN) and maze.has_wall(cc, rr, dE):
-                        gx, gz = ox + dc, oz + dr
-                        _yawc = float(np.arctan2(gx - ox, gz - oz))
-                        imgs.append(R.render_view_tensor(win, (ox, EYE_H, oz), _yawc,
+            # variant J: corner cameras. Two walls meeting = blind pocket for the
+            # centre-standing rig. One view per recessed corner, aimed in, pitched down.
+            cc, rr = cell
+            for dc, dr, dN, dE in ((0.5, -0.5, 0, 1), (0.5, 0.5, 2, 1),
+                                   (-0.5, 0.5, 2, 3), (-0.5, -0.5, 0, 3)):
+                if maze.has_wall(cc, rr, dN) and maze.has_wall(cc, rr, dE):
+                    gx, gz = ox + dc, oz + dr
+                    _yawc = float(np.arctan2(gx - ox, gz - oz))
+                    imgs.append(R.render_view_tensor(win, (ox, EYE_H, oz), _yawc,
+                                                     -0.5, width=W, height=H,
+                                                     fov_x=spec.fov_x))
+                    depths.append((len(imgs) - 1,
+                                   R.render_depth_tensor(win, (ox, EYE_H, oz), _yawc,
                                                          -0.5, width=W, height=H,
-                                                         fov_x=spec.fov_x))
-                        depths.append((len(imgs) - 1,
-                                       R.render_depth_tensor(win, (ox, EYE_H, oz), _yawc,
-                                                             -0.5, width=W, height=H,
-                                                             fov_x=spec.fov_x)))
-                        c2ws.append(R.c2w(_yawc, -0.5,
-                                          ((ox - gx_c) * CELL_M, EYE_H * CELL_M,
-                                           (oz - gz_c) * CELL_M)))
+                                                         fov_x=spec.fov_x)))
+                    c2ws.append(R.c2w(_yawc, -0.5,
+                                      ((ox - gx_c) * CELL_M, EYE_H * CELL_M,
+                                       (oz - gz_c) * CELL_M)))
 
     batch = torch.stack(imgs).unsqueeze(0)                       # [1,N,3,H,W]
     extr = torch.from_numpy(np.stack(c2ws)).unsqueeze(0)         # [1,N,4,4]

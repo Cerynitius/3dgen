@@ -392,6 +392,7 @@ def render_view_tensor(win, pos_world_grid, yaw, pitch,
     out = [shade(o[i:i + chunk], dirs[i:i + chunk], win)
            for i in range(0, dirs.shape[0], chunk)]
     img = torch.cat(out).reshape(height, width, 3).pow(1 / 2.0).clamp(0, 1)
+    img = torch.nan_to_num(img, nan=0.0, posinf=1.0, neginf=0.0)   # grazing rays can NaN
     return img.permute(2, 0, 1).contiguous()
 
 
