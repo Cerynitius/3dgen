@@ -1,5 +1,10 @@
 # The examined config
 
+> **2026-08-22：本文是历史测量记录，已不代表当前默认值。** 当前配置见
+> `playground/labyrinth/STATUS.md`（光学 120°/476 方图、平视环+直下+角落机位、
+> 洞穴纹理+火盆、NaN 过滤、预烘）。下面的测量方法（每个值都有实测背书、
+> PSNR 反相关教训）仍然值得读。
+
 Every value below is a default in the code, so `python stream_server.py --warm 1` with no
 flags *is* this config. Each one is here because a measurement chose it, and the
 measurement is named. Where something was picked by judgement rather than by number, it
