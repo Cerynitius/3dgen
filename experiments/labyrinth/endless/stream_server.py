@@ -94,7 +94,8 @@ class Streamer:
         # cache. Hash the source of the modules that decide tile content as well, and any
         # code change busts it automatically.
         src = ""
-        for mod in (T, R2, __import__("infinite_maze")):
+        import fastinfer as FI
+        for mod in (T, R2, __import__("infinite_maze"), RC, FI):
             try:
                 with open(mod.__file__, "rb") as fh:
                     src += hashlib.blake2b(fh.read(), digest_size=8).hexdigest()
@@ -102,6 +103,7 @@ class Streamer:
                 pass
         stamp = json.dumps({"seed": seed, "spec": T.asdict(spec),
                             "spacing": self.maze.spacing, "src": src,
+                            "fast": FI.stamp(),
                             "light": [R2.REACH_M, R2.INTENSITY, R2.FALLOFF_K,
                                       R2.AMBIENT, R2.FILL]}, sort_keys=True)
         self.version = hashlib.blake2b(stamp.encode(), digest_size=6).hexdigest()

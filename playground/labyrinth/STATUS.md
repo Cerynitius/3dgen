@@ -20,10 +20,13 @@
 - 低位火盆（0.55 m）向上打光，墙面光池贴地线；地面亮漫反射；天花板刻意暗
 - 渲染出口 NaN 过滤（nan_to_num）
 
-**前向（recon.py）**
+**前向（recon.py + fastinfer.py）**
 - 输入再消毒一次 nan_to_num；rig 位姿 + 内参作为条件输入
 - splat 位置由 gs_depth 用精确 rig 位姿反投影（`unproject="gt"`），
   逐视角尺度对 raycast 真深度拟合（`scale_from="perview"`）
+- 快路径 fastinfer.py 默认开（卸载三个无消费者的 DPT 头、RoPE 缓存、去同步）：
+  前向 2.0→1.5s，tile 字节逐字节不变；`LAB_COMPILE=1` 再到 1.4s（长跑服务器建议开），
+  细节与实测见 `INFERENCE_OPTIMIZATION.md`
 
 **后处理（tiles.py）**
 - 裁剪到 tile 足迹 → 距真实表面 >10 cm 的 splat 剔除 → 0.98 尺度分位过滤 →
@@ -44,13 +47,13 @@
 
 ## 已知上限
 
-- 单 tile 2.5–4 s（~32 视角）；预烘 + 限速器保证行走覆盖
+- 单 tile ~1.9–2.1 s（33–35 视角实测；快路径默认开）；预烘 + 限速器保证行走覆盖
 - 显存在当前视角数下稳定（配合 expandable_segments 启动项）
 - 纹理"油画感"是前向 splat 重建的本性，模型不换即此水准
 
 ## 下一步
 
-路线与已证伪方向见 `INFERENCE_OPTIMIZATION.md`：
+路线与已证伪方向见 `INFERENCE_OPTIMIZATION.md`（前向已摸到全局注意力的硬件峰）：
 
-1. 前向推理加速：torch.compile / CUDA graph（视角数会变，需按形状分桶）
+1. 视图渲染合批/捕获（rig ~0.4s/tile，是前向之后的下一块）
 2. 第二生成节点（水平扩展）

@@ -32,6 +32,7 @@ import numpy as np
 import torch
 
 import tiles as T
+import fastinfer as FI
 
 WEIGHTS = "/home/zrx/HY-World-2.0/weights"
 _pipeline = None
@@ -44,7 +45,9 @@ def get_pipeline():
         from hyworld2.worldrecon.pipeline import WorldMirrorPipeline
         t0 = time.perf_counter()
         _pipeline = WorldMirrorPipeline.from_pretrained(
-            WEIGHTS, subfolder="HY-WorldMirror-2.0")
+            WEIGHTS, subfolder="HY-WorldMirror-2.0",
+            disable_heads=FI.disabled_heads())
+        FI.prepare(_pipeline)
         print(f"[recon] WorldMirror resident in {time.perf_counter() - t0:.1f}s",
               flush=True)
     return _pipeline
@@ -73,14 +76,9 @@ def infer(batch, extr, intr, use_priors=True):
         views["camera_intrs"] = intr.to(device)
         cond_flags[0] = 1
         cond_flags[2] = 1
-    inner = pipe.model.module if hasattr(pipe.model, "module") else pipe.model
-    model_bf16 = getattr(inner, "enable_bf16", False)
-    use_amp = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
     t0 = time.perf_counter()
     with torch.no_grad():
-        with torch.amp.autocast("cuda", enabled=(not model_bf16 and use_amp),
-                                dtype=torch.bfloat16):
-            pred = pipe.model(views=views, cond_flags=cond_flags, is_inference=True)
+        pred = FI.run(pipe, views, cond_flags)
     if device.type == "cuda":
         torch.cuda.synchronize()
     return pred, time.perf_counter() - t0

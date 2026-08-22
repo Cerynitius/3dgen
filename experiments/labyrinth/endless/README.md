@@ -13,6 +13,8 @@ returns the tile you left, byte for byte.
 | `render.py` | raycast through a sliding window; world-anchored textures |
 | `tiles.py` | tile lattice, camera rig, metric alignment, pruning, packing |
 | `recon.py` | WorldMirror forward pass + gsplat scoring against the raycaster |
+| `fastinfer.py` | the fast forward: dead-head skip, RoPE cache, sync-free conditioning, torch.compile, CUDA graphs — layered env flags, hashed into the world version |
+| `bench_infer.py` | times the fastinfer layers and diffs their tile bytes against a saved baseline |
 | `stream_server.py` | ring scheduler, LRU cache, HTTP streaming |
 | `bench_config.py`, `bench_light.py`, `bench_seams.py`, `bench_surface.py`, `bench_client.py` | the measurement suites that choose the config |
 | `selftest_maze.py` / `mutation_test.sh` | maze correctness, and proof the tests bite |
