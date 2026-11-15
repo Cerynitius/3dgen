@@ -5,19 +5,54 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Endless Streets</title>
 <style>
-  :root { --bg:#111; --fg:#e8e8e8; --dim:#9a9a9a; --accent:#7fc4ff; }
-  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui,sans-serif; overflow:hidden; }
+  :root { --bg:#111; --fg:#e8e8e8; --dim:#9a9a9a; --accent:#7fc4ff;
+          --nav:#17784a; --nav2:#0f5c37; --warn:#c8641a; --done:#2563c9; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui,"Noto Sans CJK SC",sans-serif; overflow:hidden; }
   #wrap { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; }
   #view { max-width:100vw; max-height:100vh; width:100vw; height:100vh; object-fit:contain; image-rendering:auto; cursor:crosshair; }
-  #hud { position:fixed; left:12px; top:10px; padding:6px 10px; background:rgba(0,0,0,.55); border-radius:6px; white-space:pre; font-family:ui-monospace,monospace; font-size:12px; }
-  #help { position:fixed; left:12px; bottom:10px; padding:6px 10px; background:rgba(0,0,0,.55); border-radius:6px; color:var(--dim); font-size:12px; }
-  .on { color:var(--accent); }
+  #hud { position:fixed; right:12px; top:10px; padding:6px 10px; background:rgba(0,0,0,.55); border-radius:6px; white-space:pre; font-family:ui-monospace,monospace; font-size:11px; color:#cfcfcf; }
+  #help { position:fixed; left:12px; top:10px; padding:6px 10px; background:rgba(0,0,0,.55); border-radius:6px; color:var(--dim); font-size:12px; max-width:24vw; }
+  /* navigation */
+  #turn { position:fixed; left:50%; top:14px; transform:translateX(-50%); display:flex; align-items:center; gap:14px;
+          min-width:380px; max-width:min(640px,92vw); padding:12px 18px 12px 12px; border-radius:14px;
+          background:var(--nav); color:#fff; box-shadow:0 4px 18px rgba(0,0,0,.45); }
+  #turn.warn { background:var(--warn); } #turn.done { background:var(--done); }
+  #turnIcon { flex:none; width:72px; height:72px; }
+  #turnDist { font-size:30px; font-weight:700; line-height:1.1; }
+  #turnText { font-size:20px; font-weight:600; line-height:1.3; }
+  #turnSub { font-size:15px; opacity:.85; margin-top:2px; }
+  #mapBox { position:fixed; right:14px; bottom:14px; width:300px; height:300px; border-radius:16px; overflow:hidden;
+            box-shadow:0 4px 18px rgba(0,0,0,.5); background:#eceee6; }
+  #map { width:300px; height:300px; display:block; }
+  #bar { position:fixed; left:50%; bottom:14px; transform:translateX(-50%); display:flex; align-items:center; gap:10px;
+         padding:8px 12px; border-radius:12px; background:rgba(255,255,255,.94); color:#1d1d1d; box-shadow:0 4px 18px rgba(0,0,0,.45);
+         max-width:calc(100vw - 360px); }
+  #bar button { border:0; background:#e4e8ee; color:#1d1d1d; font-size:18px; width:34px; height:34px; border-radius:8px; cursor:pointer; }
+  #bar button:hover { background:#d3d9e2; }
+  #dest { font-size:17px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #remain { font-size:14px; color:#444; white-space:nowrap; }
+  #next { font-size:13px; color:#555; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .hidden { display:none !important; }
 </style>
 </head>
 <body>
 <div id="wrap"><img id="view" alt=""></div>
+<div id="turn" class="hidden">
+  <canvas id="turnIcon" width="144" height="144"></canvas>
+  <div><div id="turnDist"></div><div id="turnText"></div><div id="turnSub"></div></div>
+</div>
+<div id="mapBox" class="hidden"><canvas id="map" width="600" height="600"></canvas></div>
+<div id="bar" class="hidden">
+  <button id="prev" title="上一条路线">‹</button>
+  <div style="min-width:0">
+    <div id="dest"></div>
+    <div><span id="remain"></span> <span id="next"></span></div>
+  </div>
+  <button id="nextR" title="下一条路线">›</button>
+  <button id="home" title="回到起点（H）">⌂</button>
+</div>
 <div id="hud">连接中…</div>
-<div id="help">点击画面锁定鼠标 · WASD 走 · Shift 跑 · 1 原始 3DGS · 2 FastFix3D · 3 真值 · 4 左右对比 · Esc 释放鼠标</div>
+<div id="help">点击画面锁定鼠标 · WASD 走 · Shift 跑 · 1 原始 3DGS · 2 FastFix3D · 3 真值 · 4 左右对比 · R 换目的地 · H 回到起点 · N 导航开关 · Esc 释放鼠标</div>
 <script>
 const img = document.getElementById('view'), hud = document.getElementById('hud');
 const names = {1:'3DGS 渲染', 2:'FastFix3D', 3:'真值（光追）', 4:'3DGS | FastFix3D'};
@@ -28,14 +63,15 @@ function connect() {
   ws.onmessage = ev => {
     const b = new Uint8Array(ev.data);
     let h = {};
-    try { h = JSON.parse(new TextDecoder().decode(b.subarray(0, 256)).trim()); } catch (e) {}
-    const blob = new Blob([b.subarray(256)], {type:'image/jpeg'});
+    try { h = JSON.parse(new TextDecoder().decode(b.subarray(0, 512)).trim()); } catch (e) {}
+    const blob = new Blob([b.subarray(512)], {type:'image/jpeg'});
     const u = URL.createObjectURL(blob);
     img.onload = () => { if (url) URL.revokeObjectURL(url); url = u; };
     img.src = u;
     hud.textContent = `${names[h.view] || ''}${h.fix ? '' : '（修复器未加载）'}\n` +
       `位置 x ${h.x}  z ${h.z}\n帧 ${h.fps} fps · 服务端 ${h.ms} ms\n` +
       `tile 已载入 ${h.tiles} · 排队 ${h.queue}` + (h.build_ms ? ` · 每块 ${h.build_ms} ms` : '');
+    if (h.x !== undefined) nav(h.x, h.z, h.yaw);
   };
   ws.onclose = () => { hud.textContent = '连接断开，2 秒后重连…'; setTimeout(connect, 2000); };
 }
@@ -46,6 +82,9 @@ const map = {KeyW:'w', KeyA:'a', KeyS:'s', KeyD:'d', ShiftLeft:'shift', ShiftRig
 addEventListener('keydown', e => {
   if (map[e.code]) { if (!keys[map[e.code]]) { keys[map[e.code]] = 1; send({[map[e.code]]:1}); } e.preventDefault(); }
   if (['Digit1','Digit2','Digit3','Digit4'].includes(e.code)) send({view: +e.code.slice(5)});
+  if (e.code === 'KeyR') setRoute(cur + 1);
+  if (e.code === 'KeyH' || e.code === 'Backspace') { send({start: cur}); e.preventDefault(); }
+  if (e.code === 'KeyN') { navOn = !navOn; showNav(); }
 });
 addEventListener('keyup', e => { if (map[e.code]) { keys[map[e.code]] = 0; send({[map[e.code]]:0}); } });
 img.addEventListener('click', () => img.requestPointerLock && img.requestPointerLock());
@@ -53,6 +92,196 @@ addEventListener('mousemove', e => {
   if (document.pointerLockElement === img) send({dyaw: -e.movementX * 0.0025, dpitch: -e.movementY * 0.0025});
 });
 addEventListener('blur', () => { for (const k in keys) if (keys[k]) { keys[k] = 0; send({[k]:0}); } });
+
+// ------------------------------------------------------------------ navigation
+// World: metres, x and z on the ground; the walker looks along (sin yaw, cos yaw), its right is (-cos yaw, sin yaw).
+// The map is heading-up: ahead is up, the walker's right is right. +z is called north.
+const $ = id => document.getElementById(id);
+let W = null, cur = 0, R = null, navOn = true;
+let poly = [], cum = [], stepS = [], total = 0;
+const ACT = {left:'左转', right:'右转', straight:'直行'};
+const PACE = 1.0;                 // m/s, an unhurried walking pace for the time estimate
+fetch('/routes').then(r => r.json()).then(j => { W = j; setRoute(0); showNav(); });
+$('prev').onclick = () => setRoute(cur - 1);
+$('nextR').onclick = () => setRoute(cur + 1);
+$('home').onclick = () => send({start: cur});
+
+function showNav() {
+  for (const id of ['turn', 'mapBox', 'bar']) $(id).classList.toggle('hidden', !(navOn && W));
+}
+function setRoute(k) {
+  if (!W) return;
+  cur = ((k % W.routes.length) + W.routes.length) % W.routes.length;
+  R = W.routes[cur];
+  poly = R.path; cum = [0];
+  for (let i = 1; i < poly.length; i++) cum.push(cum[i-1] + Math.hypot(poly[i][0]-poly[i-1][0], poly[i][1]-poly[i-1][1]));
+  total = cum[cum.length - 1];
+  // each step sits on a polyline vertex (crossings; the goal is the last vertex)
+  stepS = R.steps.map(st => {
+    let best = 0, bd = 1e9;
+    poly.forEach((p, i) => { const d = Math.hypot(p[0]-st.x, p[1]-st.z); if (d < bd) { bd = d; best = i; } });
+    return cum[best];
+  });
+  $('dest').textContent = `${R.dest}`;
+}
+function project(x, z) {
+  let best = {d:1e9, s:0};
+  for (let i = 1; i < poly.length; i++) {
+    const ax = poly[i-1][0], az = poly[i-1][1], bx = poly[i][0], bz = poly[i][1];
+    const vx = bx-ax, vz = bz-az, L2 = vx*vx + vz*vz || 1;
+    const t = Math.max(0, Math.min(1, ((x-ax)*vx + (z-az)*vz) / L2));
+    const d = Math.hypot(x - (ax + t*vx), z - (az + t*vz));
+    if (d < best.d) best = {d, s: cum[i-1] + t*Math.sqrt(L2)};
+  }
+  return best;
+}
+const fmtM = m => m >= 1000 ? (m/1000).toFixed(1) + ' 公里' : (m < 10 ? Math.max(0, Math.round(m)) : Math.round(m/5)*5) + ' 米';
+
+function nav(x, z, yaw) {
+  if (!R || !navOn) return;
+  const p = project(x, z), s = p.s;
+  const turn = $('turn');
+  const arriveS = stepS[stepS.length - 1];
+  const goal = R.goal, dGoal = Math.hypot(x - goal[0], z - goal[1]);
+  // next instruction: the first turn (or the arrival) still ahead
+  let k = R.steps.findIndex((st, i) => st.action !== 'straight' && stepS[i] > s + 3);
+  if (k < 0) k = R.steps.length - 1;
+  const st = R.steps[k], dist = stepS[k] - s;
+  // next landmark ahead (any crossing with a landmark), for the bar
+  const li = R.steps.findIndex((q, i) => q.landmark && q.action !== 'arrive' && stepS[i] > s + 3);
+  let icon, arrived = false;
+  turn.classList.remove('warn', 'done');
+  if (dGoal < 6 || s > arriveS - 2 && p.d < 9) {
+    turn.classList.add('done'); icon = 'arrive'; arrived = true;
+    $('turnDist').textContent = '已到达';
+    $('turnText').textContent = R.dest;
+    $('turnSub').textContent = '目的地在您右侧';
+  } else if (p.d > 9) {
+    turn.classList.add('warn'); icon = 'back';
+    $('turnDist').textContent = '已偏离路线';
+    $('turnText').textContent = '请回到地图上的蓝色路线';
+    $('turnSub').textContent = `离路线约 ${fmtM(p.d)}`;
+  } else if (st.action === 'arrive') {
+    icon = 'arrive';
+    $('turnDist').textContent = fmtM(dist);
+    $('turnText').textContent = `到达 ${R.dest}`;
+    $('turnSub').textContent = '目的地在道路右侧';
+  } else {
+    icon = st.action;
+    $('turnDist').textContent = dist < 12 ? '现在' : fmtM(dist);
+    $('turnText').textContent = `在${st.landmark}路口${ACT[st.action]}`;
+    $('turnSub').textContent = `进入 ${st.street}`;
+  }
+  drawIcon(icon);
+  const left = Math.max(0, total - s);
+  $('remain').textContent = arrived ? '已到达，按 R 换一个目的地' :
+    `剩余 ${fmtM(left)} · 约 ${Math.max(1, Math.ceil(left / PACE / 60))} 分钟`;
+  $('next').textContent = li >= 0 ? `· 下一个地标：${R.steps[li].landmark}` : '';
+  drawMap(x, z, yaw, s);
+}
+
+function drawIcon(kind) {
+  const c = $('turnIcon'), g = c.getContext('2d');
+  g.clearRect(0, 0, 144, 144);
+  g.strokeStyle = g.fillStyle = '#fff'; g.lineWidth = 15; g.lineCap = 'round'; g.lineJoin = 'round';
+  const head = (x, y, a) => { g.save(); g.translate(x, y); g.rotate(a); g.beginPath();
+    g.moveTo(0, -24); g.lineTo(22, 6); g.lineTo(-22, 6); g.closePath(); g.fill(); g.restore(); };
+  g.beginPath();
+  if (kind === 'left' || kind === 'right') {
+    const sx = kind === 'right' ? 1 : -1;
+    g.moveTo(72 - sx*14, 128); g.lineTo(72 - sx*14, 70); g.quadraticCurveTo(72 - sx*14, 48, 72 + sx*8, 48); g.lineTo(72 + sx*22, 48);
+    g.stroke(); head(72 + sx*40, 48, sx * Math.PI / 2);
+  } else if (kind === 'straight') {
+    g.moveTo(72, 128); g.lineTo(72, 50); g.stroke(); head(72, 34, 0);
+  } else if (kind === 'back') {
+    g.arc(72, 76, 36, Math.PI * 0.15, Math.PI * 1.55); g.stroke(); head(100, 36, Math.PI * 0.62);
+  } else {                                                        // arrive: a flag
+    g.lineWidth = 10; g.moveTo(46, 128); g.lineTo(46, 22); g.stroke();
+    g.beginPath(); g.moveTo(50, 24); g.lineTo(112, 42); g.lineTo(50, 62); g.closePath(); g.fill();
+  }
+}
+
+function lmChar(label) {
+  if (!label) return null;
+  if (label.includes('海报柱')) return ['柱', '#8e44ad'];
+  if (label.includes('亭') || label.includes('站')) return ['亭', '#d35400'];
+  if (label.includes('像') || label.includes('雕塑')) return ['像', '#7f6a3b'];
+  if (label.includes('钟')) return ['钟', '#2c6e63'];
+  return ['树', '#2e7d32'];
+}
+
+function drawMap(x, z, yaw, s) {
+  const c = $('map'), g = c.getContext('2d'), S = 2;            // canvas is 2x the css size
+  const cw = 300, ch = 300, ox = 150, oy = 200, k = 2.1;           // px per metre (300 px ~ 140 m)
+  const fx = Math.sin(yaw), fz = Math.cos(yaw), rx = -Math.cos(yaw), rz = Math.sin(yaw);
+  const T = (px, pz) => { const dx = px - x, dz = pz - z; return [ox + k*(dx*rx + dz*rz), oy - k*(dx*fx + dz*fz)]; };
+  g.setTransform(S, 0, 0, S, 0, 0);
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, cw, ch);              // streets are the white background
+  const P = W.P, HW = W.HW, span = 150 / k + P;
+  const i0 = Math.floor((x - span) / P), i1 = Math.floor((x + span) / P), j0 = Math.floor((z - span) / P), j1 = Math.floor((z + span) / P);
+  g.fillStyle = '#e3e0d6'; g.strokeStyle = '#d2cec2'; g.lineWidth = 1;
+  for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {   // blocks
+    const a = T(i*P + HW, j*P + HW), b = T((i+1)*P - HW, j*P + HW), cc = T((i+1)*P - HW, (j+1)*P - HW), d = T(i*P + HW, (j+1)*P - HW);
+    g.beginPath(); g.moveTo(...a); g.lineTo(...b); g.lineTo(...cc); g.lineTo(...d); g.closePath(); g.fill(); g.stroke();
+  }
+  // route: travelled part grey, the rest blue with a white edge
+  const line = (from, to, col, w) => {
+    g.strokeStyle = col; g.lineWidth = w; g.lineCap = 'round'; g.lineJoin = 'round'; g.beginPath();
+    let started = false;
+    for (let i = 1; i < poly.length; i++) {
+      const a0 = cum[i-1], a1 = cum[i];
+      if (a1 < from || a0 > to) continue;
+      const t0 = Math.max(0, (from - a0) / (a1 - a0 || 1)), t1 = Math.min(1, (to - a0) / (a1 - a0 || 1));
+      const A = [poly[i-1][0] + t0*(poly[i][0]-poly[i-1][0]), poly[i-1][1] + t0*(poly[i][1]-poly[i-1][1])];
+      const B = [poly[i-1][0] + t1*(poly[i][0]-poly[i-1][0]), poly[i-1][1] + t1*(poly[i][1]-poly[i-1][1])];
+      if (!started) { g.moveTo(...T(...A)); started = true; }
+      g.lineTo(...T(...B));
+    }
+    g.stroke();
+  };
+  line(0, s, '#ffffff', 11); line(0, s, '#a7b0ba', 7);
+  line(s, total, '#ffffff', 12); line(s, total, '#2f7be6', 8);
+  // street names of the route
+  g.font = '600 11px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  const named = new Set();
+  R.steps.forEach((st, n) => {
+    if (!st.street || named.has(st.street)) return;
+    named.add(st.street);
+    const nx = R.steps[n+1] ? R.steps[n+1] : st;
+    const [mx, my] = T((st.x + nx.x) / 2, (st.z + nx.z) / 2);
+    if (mx < 10 || mx > cw - 10 || my < 10 || my > ch - 10) return;
+    const w = g.measureText(st.street).width + 8;
+    g.fillStyle = 'rgba(255,255,255,.9)'; g.fillRect(mx - w/2, my - 9, w, 18);
+    g.fillStyle = '#33465c'; g.fillText(st.street, mx, my);
+  });
+  // landmarks at the crossings of the route
+  R.steps.forEach(st => {
+    const lc = st.action !== 'arrive' && lmChar(st.landmark);
+    if (!lc) return;
+    const [px, py] = T(st.x, st.z);
+    g.fillStyle = '#fff'; g.beginPath(); g.arc(px, py, 11, 0, 7); g.fill();
+    g.fillStyle = lc[1]; g.beginPath(); g.arc(px, py, 9, 0, 7); g.fill();
+    g.fillStyle = '#fff'; g.font = '700 11px system-ui, sans-serif'; g.fillText(lc[0], px, py + 0.5);
+  });
+  // home and destination
+  const [hx, hy] = T(W.home.x, W.home.z);
+  g.fillStyle = '#ffffff'; g.fillRect(hx - 11, hy - 11, 22, 22);
+  g.fillStyle = '#3b6fb6'; g.beginPath(); g.moveTo(hx, hy - 9); g.lineTo(hx + 9, hy - 1); g.lineTo(hx + 6, hy - 1); g.lineTo(hx + 6, hy + 8);
+  g.lineTo(hx - 6, hy + 8); g.lineTo(hx - 6, hy - 1); g.lineTo(hx - 9, hy - 1); g.closePath(); g.fill();
+  const [gx, gy] = T(R.goal[0], R.goal[1]);
+  g.fillStyle = '#d93a2b'; g.strokeStyle = '#fff'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(gx, gy); g.bezierCurveTo(gx - 14, gy - 16, gx - 9, gy - 30, gx, gy - 30);
+  g.bezierCurveTo(gx + 9, gy - 30, gx + 14, gy - 16, gx, gy); g.fill(); g.stroke();
+  g.fillStyle = '#fff'; g.beginPath(); g.arc(gx, gy - 20, 4, 0, 7); g.fill();
+  // walker
+  g.fillStyle = '#1565c0'; g.strokeStyle = '#fff'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(ox, oy - 13); g.lineTo(ox + 10, oy + 10); g.lineTo(ox, oy + 5); g.lineTo(ox - 10, oy + 10); g.closePath(); g.stroke(); g.fill();
+  // north (+z) marker
+  const nx = 22 + 13 * (0*rx + 1*rz), ny = 22 - 13 * (0*fx + 1*fz);
+  g.fillStyle = 'rgba(255,255,255,.92)'; g.beginPath(); g.arc(22, 22, 17, 0, 7); g.fill();
+  g.strokeStyle = '#c62828'; g.lineWidth = 3; g.beginPath(); g.moveTo(22, 22); g.lineTo(nx, ny); g.stroke();
+  g.fillStyle = '#222'; g.font = '700 11px system-ui, sans-serif'; g.fillText('北', 22 - (nx - 22) * 0.55, 22 - (ny - 22) * 0.55);
+}
 </script>
 </body>
 </html>

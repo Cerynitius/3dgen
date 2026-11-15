@@ -6,8 +6,10 @@
 
 The browser sends its input state over a WebSocket; the server moves the walker (with collision against the town)
 and streams frames back. Views: 1 3DGS render, 2 FastFix3D, 3 ground truth (ray tracer), 4 render | FastFix3D.
+GET /routes gives the training routes (routes.py) for the page's navigation panel; {"start": k} puts the walker
+back at the start of route k.
 
-usage: server.py [--port 8095] [--seed 0] [--walk-gpu 0] [--build-gpu 1] [--radius 2] [--no-fix]
+usage: run.sh [--seed 0] [--walk-gpu 0] [--build-gpus 1] [--radius 3] [--recon bake|worldmirror] [--no-fix]
 """
 import argparse
 import asyncio
@@ -32,6 +34,7 @@ import splatrender as SR  # noqa: E402
 import stiles as ST  # noqa: E402
 import world as Wd  # noqa: E402
 import cityassets as CA  # noqa: E402
+import routes as RO  # noqa: E402
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--port", type=int, default=8095)
@@ -74,7 +77,8 @@ if args.no_assets:
 else:
     CACHE = CACHE.with_name(CACHE.name + f"_{CA.VERSION}_all")   # facades + props + ground generated
 CACHE.mkdir(parents=True, exist_ok=True)
-POS = [0.0, -12.0]          # last walker position (asset priorities)
+HOME = RO.home(args.seed)   # the walk starts on the sidewalk in front of home (training routes, routes.py)
+POS = [HOME["x"], HOME["z"]]          # last walker position (asset priorities)
 
 
 class Assets:
@@ -253,7 +257,7 @@ def ring(x, z, r):
 # ------------------------------------------------------------------ walker
 class Walker:
     def __init__(self):
-        self.x, self.z, self.yaw, self.pitch = 0.0, -12.0, 0.0, 0.0
+        self.x, self.z, self.yaw, self.pitch = HOME["x"], HOME["z"], HOME["yaw"], 0.0
         self.y = Wd.EYE
         self.solid = None
         self.solid_at = None
@@ -440,6 +444,10 @@ async def index(_):
     return web.FileResponse(HERE / "client/walk.html")
 
 
+async def routes_json(_):
+    return web.json_response(RO.public(args.seed))
+
+
 async def ws_handler(request):
     global pipe
     ws = web.WebSocketResponse(max_msg_size=0)
@@ -457,6 +465,11 @@ async def ws_handler(request):
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
                 m = json.loads(msg.data)
+                if "start" in m:          # back to the start of a route (all routes start at home)
+                    r = RO.routes(args.seed)[int(m["start"]) % len(RO.DESTS)]
+                    walker.x, walker.z, walker.yaw, walker.pitch = r["start"][0], r["start"][1], r["yaw"], 0.0
+                    if pipe.fixer is not None:
+                        pipe.fixer.reset()
                 if "view" in m:
                     view = int(m["view"])
                     if pipe.fixer is not None:
@@ -487,11 +500,11 @@ async def ws_handler(request):
             fps_n += 1
             if now - fps_t > 1.0:
                 fps, fps_t, fps_n = fps_n / (now - fps_t), now, 0
-            hud = {"x": round(walker.x, 1), "z": round(walker.z, 1), "view": view, "ms": round(ms, 1), "fps": round(fps, 1),
+            hud = {"x": round(walker.x, 2), "z": round(walker.z, 2), "yaw": round(walker.yaw, 3), "view": view, "ms": round(ms, 1), "fps": round(fps, 1),
                    "tiles": len(store.ready), "queue": len(store.want) + store.busy, "fix": pipe.fixer is not None,
                    "splats": round(pipe.cat["means"].shape[0] / 1e6, 2) if pipe.cat is not None else 0,
                    "build_ms": round(float(np.median(store.build_ms[-20:])), 0) if store.build_ms else None}
-            await ws.send_bytes(json.dumps(hud).encode().ljust(256) + jpg)
+            await ws.send_bytes(json.dumps(hud).encode().ljust(512) + jpg)
             await asyncio.sleep(0)
     finally:
         task.cancel()
@@ -502,10 +515,11 @@ def main():
     global pipe
     torch.cuda.set_device(WD)
     pipe = Pipeline(store)
-    store.request(ring(0.0, -12.0, args.radius))
+    store.request(ring(HOME["x"], HOME["z"], args.radius))
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
+    app.router.add_get("/routes", routes_json)
     print(f"[walk] http://0.0.0.0:{args.port}/  walk {WD}, build {BDS}, fix={'on' if pipe.fixer else 'off'}", flush=True)
     web.run_app(app, port=args.port, print=None)
 

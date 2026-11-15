@@ -1,9 +1,10 @@
-"""Facade photo generator: Qwen-Image-2.1-Turbo, FP8 blocks, on one 24 GB card.
+"""Image generator for the town: Qwen-Image-2.1-Turbo, FP8 blocks, on one 24 GB card.
 
-The walk servers POST what they need, nearest first; the worker generates in that order and writes
-assets_cache/<version>_seed<seed>/<key>.jpg (atomic rename), so readers only ever see whole files.
+Facades, cut-outs (trees, statues, benches, kiosks), seamless ground textures and posters. The walk servers POST
+what they need, nearest first; the worker generates in that order and writes assets_cache/<version>_seed<seed>/<key>
+(.jpg, or .png for cut-outs; atomic rename), so readers only ever see whole files.
 
-usage (env imggen21): CUDA_VISIBLE_DEVICES=2 python assetgen.py [--port 8097] [--check PROMPT]
+usage: assetgen.sh [--port 8097] [--check JOBS.json]
 """
 import argparse
 import os
