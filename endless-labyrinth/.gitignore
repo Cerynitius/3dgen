@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+
+# runtime output, never source
+*.log
+bench/
+inference_output/
+*.ply
+*.bin
+
+# model weights and large assets live upstream, not here
+weights/
+*.safetensors
+*.ckpt
+*.onnx
+
+# mutation harness scratch: a leftover of these means a mutation is still applied
+*.mut-orig
+*.bak
+
+.DS_Store
+.claude/
+CLAUDE.md
