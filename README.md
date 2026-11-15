@@ -27,6 +27,34 @@ Older adults with MCI or early Alzheimer's disease often still recognise landmar
 - **Smooth pictures:** delay and flicker cause cybersickness (LaViola 2000); every frame is repaired and streamed in real time.
 - **No hand-built scenes:** layout, appearance and routes are generated, and a new seed gives a new town with new routes.
 
+## Walkthrough architecture
+
+The town is never stored. Every part of it is computed from the seed when the walker comes near, reconstructed into 3D Gaussians tile by tile, and rendered and repaired frame by frame on the server; the browser shows the pictures and the navigation panel.
+
+```mermaid
+flowchart LR
+  seed([seed]) --> town["Town layout<br/>street grid, buildings, landmarks"]
+  seed --> routes["Routes<br/>home, destinations, street names"]
+  town --> gen["Image generator<br/>Qwen-Image-2.1-Turbo"]
+  town --> rt["Ray tracer<br/>generated textures, sun, shadows"]
+  gen --> rt
+  rt --> tiles["Tile builder<br/>rig views → 3D Gaussians"]
+  tiles --> store["Tile store<br/>7 × 7 tiles around the walker"]
+  store --> frame["Frame<br/>3DGS render → FastFix3D"]
+  rt -- reference views --> frame
+  frame -- JPEG --> page["Browser<br/>picture + navigation panel"]
+  routes --> page
+  page -- keys, mouse --> frame
+```
+
+- **Town from a seed:** a street grid with 40 m blocks. Every block is generated from its own hash (buildings, street trees, lamps, benches and the landmark of its crossing), so any part of the town can be built on its own and a place walked back to is unchanged. The routes and the street names come from the same seed.
+- **Looks generated on demand:** every object has a key, computed from the seed and its geometry, and a prompt. The walk server asks the generator service for what the next tiles and the walker's surroundings need, nearest first; the service writes each image once, and every later visit reads it from the cache. A tile waits for its images before it is built, so its reconstruction carries the generated looks.
+- **Ground truth by ray tracing:** a GPU ray tracer (Triton) renders the town with the generated textures, alpha-tested cut-outs for trees, statues and benches, sun and shadows. It renders the views the tiles are built from, the reference views for FastFix3D and the ground-truth view.
+- **Tiles built like a filmed walk:** the town is reconstructed in 20 m tiles, one per crossing and per street segment; the block interiors belong to the nearest street tile. For each tile the ray tracer renders 38–52 eye-level views on its walkable area (level rings, views tilted up at the facades, and context views from the neighbouring tiles), the way a walking video sees a street. The views become 3D Gaussians either directly, as one surface-aligned disc per pixel and one splat per 2.5 cm voxel from the closest view, or through WorldMirror, with the model's positions scaled per view to metres on the true depth. Splats outside the tile or off every real surface are removed.
+- **Streaming around the walker:** the tiles of a 7 × 7 square around the walker are built nearest first on a separate GPU, cached on disk and moved to the walk GPU; tiles that fall out of reach are dropped. Each frame draws only the tiles in the field of view, at three levels of detail (2.5, 6 and 15 cm voxels, switching at 8 and 25 m).
+- **Repair every frame:** the walk GPU splats the tiles at the walker's pose, adds sky and haze, and FastFix3D repairs the frame against the tile view closest to the walker's pose. The frame goes to the browser as JPEG over a WebSocket, and the browser sends keys and mouse movement back.
+- **Navigation in the browser:** the page loads the routes once and draws the instruction card and the heading-up map from the walker's position and heading in every frame.
+
 ## Results
 
 ### Generated content
