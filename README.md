@@ -32,7 +32,7 @@ Older adults with MCI or early Alzheimer's disease often still recognise landmar
 The town is never stored. Every part of it is computed from the seed when the walker comes near, reconstructed into 3D Gaussians tile by tile, and rendered and repaired frame by frame on the server; the browser shows the pictures and the navigation panel.
 
 ```mermaid
-flowchart LR
+flowchart TD
   seed([seed]) --> town["Town layout<br/>street grid, buildings, landmarks"]
   seed --> routes["Routes<br/>home, destinations, street names"]
   town --> gen["Image generator<br/>Qwen-Image-2.1-Turbo"]
