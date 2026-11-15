@@ -4,7 +4,7 @@
 
 - **Training routes:** home is a residential compound with its name plate; four routes lead to a community health centre, a market, a senior centre and a post office, each turning only at crossings with landmarks (`routes.py`).
 - **Navigation panel:** instructions in Chinese that name the landmark and the street, a heading-up map, remaining distance and time, and an off-route warning (`client/walk.html`).
-- **Generated looks:** facades with shop signs, asphalt, paving, trees, statues, benches, kiosks, poster columns and street clocks come from Qwen-Image-2.1-Turbo while you walk; road markings, kerbs and lamp posts are drawn by code.
+- **Generated looks:** facades with shop signs, asphalt, paving, trees, street lamps, statues, benches, kiosks, poster columns and street clocks come from Qwen-Image-2.1-Turbo while you walk; road markings and kerbs are drawn by code.
 - **Same place every time:** the town and the routes are pure functions of the seed, and generated images are cached by key.
 - **Views:** 3DGS render, FastFix3D, ray-traced ground truth, and render | FastFix3D side by side.
 

@@ -70,8 +70,8 @@ class Rng:
 
 # Props: things whose look is generated while walking (cityassets). Columns of the props array:
 # kind, x, y0, z, height, half width, angle (rad, of the billboard plane), crossed (0/1), group a, b, c
-P_STREET_TREE, P_PARK_TREE, P_BIG_TREE, P_STATUE, P_BENCH, P_KIOSK, P_ADCOL, P_CLOCK = range(1, 9)
-BILLBOARD_PROPS = (P_STREET_TREE, P_PARK_TREE, P_BIG_TREE, P_STATUE, P_BENCH)   # drawn as generated cut-outs
+P_STREET_TREE, P_PARK_TREE, P_BIG_TREE, P_STATUE, P_BENCH, P_KIOSK, P_ADCOL, P_CLOCK, P_LAMP = range(1, 10)
+BILLBOARD_PROPS = (P_STREET_TREE, P_PARK_TREE, P_BIG_TREE, P_STATUE, P_BENCH, P_LAMP)   # drawn as generated cut-outs
 NPROP = 11
 
 
@@ -126,12 +126,16 @@ def _tree(pr, x, z, rng, big=False, kind=P_STREET_TREE, group=(0, 0, 0)):
     pr.cur = -1
 
 
-def _lamp(pr, x, z, ax, sgn):
+def _lamp(pr, x, z, ax, sgn, group=(0, 0, 0)):
+    """Street lamp: a generated cut-out (one design per street segment, like the trees); the pole, arm and head boxes
+    stand in until the image exists and stay for collisions."""
+    pr.prop(P_LAMP, x, 0.0, z, 0.0, 0.0, 0.0, 1, *group)
     pr.add_box((x - 0.07, 0.0, z - 0.07), (x + 0.07, 5.2, z + 0.07), M_POLE, [0.20, 0.22, 0.22])
     dx, dz = (sgn * 0.7, 0.0) if ax == 0 else (0.0, sgn * 0.7)
     cx, cz = x + dx, z + dz
     pr.add_box((min(x, cx) - 0.06, 5.05, min(z, cz) - 0.06), (max(x, cx) + 0.06, 5.2, max(z, cz) + 0.06), M_POLE, [0.20, 0.22, 0.22])
     pr.add_box((cx - 0.22, 4.85, cz - 0.22), (cx + 0.22, 5.05, cz + 0.22), M_LAMP, [0.90, 0.88, 0.75])
+    pr.cur = -1
 
 
 def _landmark(pr, i, j, seed):
@@ -228,7 +232,7 @@ def block(i, j, seed=0):
                     x, z = i * P + off, j * P + t
                 if HW + 1 < t < P - HW - 1:
                     if (k + (side > 0)) % 2 == 0:
-                        _lamp(pr, x, z, 1 - ax, -side)
+                        _lamp(pr, x, z, 1 - ax, -side, group=(i, j, ax))
                     elif rng.u() < 0.7:
                         _tree(pr, x, z, rng, group=(i, j, ax))   # one species per street segment
     _landmark(pr, i, j, seed)

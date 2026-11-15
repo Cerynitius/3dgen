@@ -137,6 +137,10 @@ STATUES = ["一位老人坐在石头上读书的铜像", "一匹扬蹄奔马的�
 KIOSKS = ["报刊亭", "书报亭", "便民服务亭", "彩票站", "早点亭", "修鞋配钥匙亭"]
 POSTERS = ["社区健康讲座", "重阳节登高活动", "公园菊花展", "垃圾分类 从我做起", "老年大学春季招生", "广场舞比赛",
            "社区义诊", "防范电信诈骗", "全民健身日", "夏日纳凉晚会", "书法绘画展", "社区读书会"]
+LAMPS = ["顶部有一个灯笼形玻璃灯罩的黑色仿古铸铁路灯", "灯杆顶端左右对称各伸出一个弯臂、各挂一盏灯的双头路灯",
+         "顶端有三个白色球形灯罩的景观路灯", "墨绿色铸铁灯杆、顶部一个四方玻璃灯罩的老式路灯",
+         "银灰色灯杆、顶端左右对称各伸出一个灯臂的现代双臂路灯", "顶部一个圆锥形灯帽的深灰色庭院路灯"]
+LAMP_H = [4.5, 7.0, 4.8, 4.5, 7.5, 4.0]   # metres, base to top, per design (double-arm street lamps stand taller)
 TREE_H = {Wd.P_STREET_TREE: (6.5, 8.5), Wd.P_PARK_TREE: (7.0, 10.0), Wd.P_BIG_TREE: (10.0, 12.5)}
 _CUT = "透明背景，只有{}本身，没有地面、没有阴影、没有其他物体，侧面平视，完整地出现在画面中，写实摄影，自然光。"
 
@@ -158,6 +162,12 @@ def prop_asset(pr, seed):
         prompt = f"一棵完整的{old}{sp}，从地面上的树干根部到树冠顶部都在画面内，枝叶繁茂。" + _CUT.format("这棵树")
         return dict(key="x" + key, prompt=prompt, w=576, h=896, gseed=k1 & 0x7FFFFFFF, kind="cutout",
                     label=f"大{sp}")
+    if kind == Wd.P_LAMP:           # one design per street segment
+        k1, k2, key = _k(seed, 53, ga, gb, gc)
+        style = LAMPS[Wd.Rng(k1, k2).i(len(LAMPS))]
+        prompt = (f"一根完整的城市街道{style}，从地面上的灯杆底座到顶部灯头都在画面内，左右对称。"
+                  + _CUT.format("这根路灯").replace("侧面平视", "正面平视"))
+        return dict(key="x" + key, prompt=prompt, w=512, h=1024, gseed=k1 & 0x7FFFFFFF, kind="cutout", label="路灯")
     rx, rz = int(round(float(pr[1]) * 100)), int(round(float(pr[3]) * 100))
     k1, k2, key = _k(seed, 37, kind, rx, rz)
     rng = Wd.Rng(k1, k2)
@@ -202,6 +212,9 @@ def prop_shape(pr, seed):
         return 0.0, rng.r(lo, hi), rng.r(0, math.pi / 2)
     if kind == Wd.P_STATUE:
         return float(pr[2]), float(pr[4]), rng.r(0, math.pi / 2)
+    if kind == Wd.P_LAMP:           # crossed planes along and across the street; height by design
+        k1, k2, _ = _k(seed, 53, int(pr[8]), int(pr[9]), int(pr[10]))
+        return 0.0, LAMP_H[Wd.Rng(k1, k2).i(len(LAMPS))], 0.0
     if kind == Wd.P_BENCH:
         return 0.0, None, float(pr[6])          # height follows the photo, width = the bench box
     return float(pr[2]), float(pr[4]), float(pr[6])
