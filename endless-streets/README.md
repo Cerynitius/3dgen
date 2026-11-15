@@ -3,6 +3,10 @@
 An endless generated town you can walk through in the browser. Each part of the town is turned into 3D Gaussians the
 first time it is needed, and every frame is cleaned up live by FastFix3D (UltraFix Fast).
 
+It is a practice ground for route training of older adults with MCI or early Alzheimer's disease: landmarks stand at
+about half of the crossings, every street keeps its own trees and shop signs, a place you walk back to looks exactly as
+you left it, and the ray-traced town is the ground truth that FastFix3D's output can be checked against (key `3`).
+
 The buildings' looks are generated while you walk: every building gets its own front-elevation photo from
 Qwen-Image-2.1-Turbo (style, number of floors and a shop with a Chinese sign chosen from the building's seed), so a new
 street brings new shops, and an old street keeps its own. The same goes for the asphalt of each street segment, the
