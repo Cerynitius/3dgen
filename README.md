@@ -8,6 +8,10 @@
 - **The same place every time:** the town is a pure function of a seed, and every generated image is cached by its key, so a street walked again looks exactly as before and a route can be practised day after day.
 - **Real time:** 3DGS render and FastFix3D at 22–27 fps at 960×540 on one RTX PRO 6000.
 
+![A walk repaired by FastFix3D](docs/assets/walk_fastfix3d.jpg)
+
+*One frame of a walk through the generated town, repaired live by FastFix3D (960×540).*
+
 ![Generated street objects](docs/assets/generated_assets.jpg)
 
 *Street trees, statues, a bench, kiosks, community posters and a street clock, generated during walks.*
