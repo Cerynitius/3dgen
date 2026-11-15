@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+*.log
+endless-streets/cache/
+endless-streets/assets_cache/
+endless-streets/runs/
