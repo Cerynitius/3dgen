@@ -1,0 +1,6 @@
+{
+  "name": "labyrinth",
+  "private": true,
+  "type": "module",
+  "description": "Procedural first-person labyrinth: cell generator, torch economy, FPS controls."
+}
