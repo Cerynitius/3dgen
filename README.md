@@ -8,9 +8,10 @@
 - **The same place every time:** the town is a pure function of a seed, and every generated image is cached by its key, so a street walked again looks exactly as before and a route can be practised day after day.
 - **Real time:** 3DGS render and FastFix3D at 22–27 fps at 960×540 on one RTX PRO 6000.
 
-![3DGS render and FastFix3D on a walk](docs/assets/walk_render_vs_fastfix3d.jpg)
+![Unseen test scene 1](docs/assets/compare_scene1.jpg)
+![Unseen test scene 2](docs/assets/compare_scene2.jpg)
 
-*Three frames of one walk. Left: the 3DGS render of the reconstructed town. Right: the same frame after FastFix3D.*
+*Both scenes are DL3DV-10K test scenes that UltraFix never saw in training. Each image is one frame of a walk at the true camera poses of held-out footage. The 3DGS was cleaned in 3D first (pole and pedestrian residue removed); Difix3D+ was optimised on each scene toward these poses; UltraFix ran zero-shot.*
 
 ![Generated street objects](docs/assets/generated_assets.jpg)
 
