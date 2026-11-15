@@ -1,8 +1,9 @@
-"""City assets generated while walking: one front-elevation photo per building (shop front + sign included).
+"""City assets generated while walking: a front-elevation photo per building (shop front and sign included), cut-outs
+for trees, statues, benches and kiosks, posters, clock faces, and ground textures per street segment and block.
 
-Pure functions of (world seed, building box), shared by the walk server (which decides what is needed) and
-assetgen.py (which runs Qwen-Image-2.1-Turbo and writes the photos). A building is identified by its box, so a
-photo never goes stale: revisiting a street shows the same shops.
+Pure functions of the world seed and the object, shared by the walk server (which decides what is needed) and
+assetgen.py (which runs Qwen-Image-2.1-Turbo and writes the images). Every object is identified by its geometry, so an
+image never goes stale: revisiting a street shows the same shops.
 """
 import math
 import os
@@ -86,7 +87,17 @@ def facade(box_row, prm_row, seed):
     floors = int((h - Wd.GF) / Wd.FH) + 1
     rng = Wd.Rng(k1, k2)
     style = STYLES[rng.i(len(STYLES))]
-    if rng.u() < 0.15:
+    import routes as RO                         # lazy: routes imports this module
+    sp = RO.special(seed).get(tuple(rx))
+    if sp is not None:                          # start / destination of the training routes: own key and sign
+        k1, k2 = Wd.h32(seed, *rx, 101), Wd.h32(*rx, seed, 103)
+        key = f"{k1:08x}{k2:08x}"
+        if sp[0] == "home":
+            ground = (f"一层正中是住宅小区的入口门洞，门洞上方挂着醒目的红底金字大牌匾，牌匾上写着“{sp[1]}”，"
+                      f"门洞旁边有门卫室的窗口")
+        else:
+            ground = f"一层是{sp[1]}，门头上方是醒目的大字招牌，招牌上写着“{sp[1]}”，{sp[2]}"
+    elif rng.u() < 0.15:
         ground = "一层是单元门和几扇带防盗网的窗户，门边停着自行车"
     else:
         suf, desc = SHOPS[rng.i(len(SHOPS))]
@@ -120,6 +131,7 @@ def path(seed, key):
 
 # ------------------------------------------------------------------ props: trees, statues, benches, kiosks ...
 SPECIES = ["法国梧桐", "国槐", "银杏", "香樟", "白蜡树", "栾树", "垂柳", "女贞", "榆树", "白玉兰", "水杉", "合欢树"]
+STATUE_SHORT = ["读书老人铜像", "奔马铜像", "母子铜像", "农民铜像", "白鹤雕塑", "吹笛少年铜像", "卧牛铜像", "拉二胡老人铜像"]
 STATUES = ["一位老人坐在石头上读书的铜像", "一匹扬蹄奔马的铜像", "一位母亲抱着孩子的铜像", "一位扛着锄头的农民铜像",
            "两只展翅的白鹤不锈钢雕塑", "一个吹笛子的少年铜像", "一头卧牛的铜像", "一位拉二胡的老人铜像"]
 KIOSKS = ["报刊亭", "书报亭", "便民服务亭", "彩票站", "早点亭", "修鞋配钥匙亭"]
@@ -144,13 +156,16 @@ def prop_asset(pr, seed):
         sp = SPECIES[Wd.Rng(k1, k2).i(len(SPECIES))]
         old = "高大的老" if kind == Wd.P_BIG_TREE else ""
         prompt = f"一棵完整的{old}{sp}，从地面上的树干根部到树冠顶部都在画面内，枝叶繁茂。" + _CUT.format("这棵树")
-        return dict(key="x" + key, prompt=prompt, w=576, h=896, gseed=k1 & 0x7FFFFFFF, kind="cutout")
+        return dict(key="x" + key, prompt=prompt, w=576, h=896, gseed=k1 & 0x7FFFFFFF, kind="cutout",
+                    label=f"大{sp}")
     rx, rz = int(round(float(pr[1]) * 100)), int(round(float(pr[3]) * 100))
     k1, k2, key = _k(seed, 37, kind, rx, rz)
     rng = Wd.Rng(k1, k2)
     if kind == Wd.P_STATUE:
-        prompt = f"{STATUES[rng.i(len(STATUES))]}，城市广场上的雕塑，没有底座。" + _CUT.format("雕塑")
-        return dict(key="x" + key, prompt=prompt, w=576, h=896, gseed=k1 & 0x7FFFFFFF, kind="cutout")
+        si = rng.i(len(STATUES))
+        prompt = f"{STATUES[si]}，城市广场上的雕塑，没有底座。" + _CUT.format("雕塑")
+        return dict(key="x" + key, prompt=prompt, w=576, h=896, gseed=k1 & 0x7FFFFFFF, kind="cutout",
+                    label=STATUE_SHORT[si])
     if kind == Wd.P_BENCH:
         prompt = "一张街边的公共长椅的正面照片，木条椅面和靠背，铸铁扶手和椅腿。" + _CUT.format("长椅").replace("侧面", "正面")
         return dict(key="x" + key, prompt=prompt, w=896, h=576, gseed=k1 & 0x7FFFFFFF, kind="cutout")
@@ -158,15 +173,24 @@ def prop_asset(pr, seed):
         name = KIOSKS[rng.i(len(KIOSKS))]
         prompt = (f"一个城市街头{name}的正面照片，亭子顶上的招牌写着“{name}”，窗口和柜台摆满商品。"
                   + _CUT.format("亭子").replace("侧面", "正面"))
-        return dict(key="x" + key, prompt=prompt, w=704, h=704, gseed=k1 & 0x7FFFFFFF, kind="cutout")
+        return dict(key="x" + key, prompt=prompt, w=704, h=704, gseed=k1 & 0x7FFFFFFF, kind="cutout", label=name)
     if kind == Wd.P_ADCOL:
         title = POSTERS[rng.i(len(POSTERS))]
         prompt = f"一张竖版的社区宣传海报，标题大字写着“{title}”，配有插图和几行小字说明，海报铺满整个画面，平面设计。"
-        return dict(key=key, prompt=prompt, w=512, h=1024, gseed=k1 & 0x7FFFFFFF, kind="plain")
+        return dict(key=key, prompt=prompt, w=512, h=1024, gseed=k1 & 0x7FFFFFFF, kind="plain",
+                    label=f"“{title}”海报柱")
     if kind == Wd.P_CLOCK:
         prompt = "一个方形街钟的钟面正面特写，白色表盘，黑色阿拉伯数字和指针，深绿色金属边框，钟面铺满整个画面，写实摄影。"
-        return dict(key=key, prompt=prompt, w=704, h=704, gseed=k1 & 0x7FFFFFFF, kind="plain")
+        return dict(key=key, prompt=prompt, w=704, h=704, gseed=k1 & 0x7FFFFFFF, kind="plain", label="街钟")
     return None
+
+
+def landmark_label(i, j, seed):
+    """Short name of the landmark at crossing (i, j) (the same pick as its generated asset), or None."""
+    pr = Wd.Prims()
+    if Wd._landmark(pr, i, j, seed) is None:
+        return None
+    return prop_asset(pr.arrays()[6][0], seed)["label"]
 
 
 def prop_shape(pr, seed):

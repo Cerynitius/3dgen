@@ -1,6 +1,8 @@
 #!/bin/bash
-# Start the walk server: walk + FastFix3D on GPU 0 (PRO 6000), tile baking on GPUs 1, 2.
-source ~/fam3dgs/env-dev.sh
-export PYTHONPATH=$HOME/fam3dgs/stubs PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=0,1,2
+# Walk server: walk + FastFix3D on --walk-gpu (default 0), tiles built on --build-gpus.
+# FAM3DGS_ENV: script that sets up the CUDA / gsplat environment; WALK_PY: the Python to run with.
+source "${FAM3DGS_ENV:-$HOME/fam3dgs/env-dev.sh}"
+export PYTHONPATH=${WALK_PYTHONPATH:-$HOME/fam3dgs/stubs} PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUDA_VISIBLE_DEVICES=${WALK_CUDA_DEVICES:-0,1,2}
 cd "$(dirname "$0")"
-exec ~/fam3dgs/venv-difix/bin/python server.py --port "${PORT:-8095}" "$@"
+exec "${WALK_PY:-$HOME/fam3dgs/venv-difix/bin/python}" server.py --port "${PORT:-8095}" "$@"

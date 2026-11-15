@@ -1,51 +1,26 @@
-# Endless Streets
+# Endless Streets: a generated street town for route training
 
-An endless generated town you can walk through in the browser. Each part of the town is turned into 3D Gaussians the
-first time it is needed, and every frame is cleaned up live by FastFix3D (UltraFix Fast).
+**An endless Chinese street town you walk through in the browser, from home to everyday destinations, with a navigation panel that names a landmark at every turn. Each part of the town is turned into 3D Gaussians the first time it is needed, and every frame is repaired live by FastFix3D.**
 
-It is a practice ground for route training of older adults with MCI or early Alzheimer's disease: landmarks stand at
-about half of the crossings, every street keeps its own trees and shop signs, a place you walk back to looks exactly as
-you left it, and the ray-traced town is the ground truth that FastFix3D's output can be checked against (key `3`).
-
-The buildings' looks are generated while you walk: every building gets its own front-elevation photo from
-Qwen-Image-2.1-Turbo (style, number of floors and a shop with a Chinese sign chosen from the building's seed), so a new
-street brings new shops, and an old street keeps its own. The same goes for the asphalt of each street segment, the
-paving of each block, the street trees (one species per street), statues, benches, kiosks, poster columns and street
-clocks; only the road markings, kerbs and lamp posts are drawn by code.
-
-## Run
-
-```bash
-./assetgen.sh       # facade generator on the RTX PRO 4000, 127.0.0.1:8097
-./run.sh --build-gpus 1                             # walk + FastFix3D on GPU 0, baked tiles on GPU 1, port 8095
-PORT=8096 ./run.sh --recon worldmirror --build-gpus 1   # same with WorldMirror tiles
-```
-
-Open `http://<host>:8095/`, click the picture to capture the mouse, walk with `W`/`A`/`S`/`D`, run with `Shift`.
-
-| Key | View |
-|---|---|
-| `1` | 3DGS render |
-| `2` | FastFix3D |
-| `3` | ground truth (ray tracer) |
-| `4` | 3DGS on the left, FastFix3D on the right |
-
-Options: `--seed` (a different town), `--radius` (tiles loaded around the walker), `--lod` / `--lod-dist` (level
-of detail), `--no-fix`, `--port`, `--no-assets` (procedural facades only). Tiles are cached in `cache/`, one directory per seed and setting.
-
-Needs the FastFix3D engine at `runs/fast_960x540.engine` (build it with `scripts/fast/build_engine.py` of
-UltraFix, `SIZE=960x540`).
+- **Training routes:** home is a residential compound with its name plate; four routes lead to a community health centre, a market, a senior centre and a post office, each turning only at crossings with landmarks (`routes.py`).
+- **Navigation panel:** instructions in Chinese that name the landmark and the street, a heading-up map, remaining distance and time, and an off-route warning (`client/walk.html`).
+- **Generated looks:** facades with shop signs, asphalt, paving, trees, statues, benches, kiosks, poster columns and street clocks come from Qwen-Image-2.1-Turbo while you walk; road markings, kerbs and lamp posts are drawn by code.
+- **Same place every time:** the town and the routes are pure functions of the seed, and generated images are cached by key.
+- **Views:** 3DGS render, FastFix3D, ray-traced ground truth, and render | FastFix3D side by side.
 
 ## Files
 
-| File | |
+| File | Contents |
 |---|---|
-| `world.py` | the town: street grid, buildings, signs, trees, lamps, landmarks at crossings |
-| `cityassets.py` | which photo each building needs (key, prompt, size) |
-| `assetgen.py` | facade generator service: Qwen-Image-2.1-Turbo FP8, crop to the front wall |
-| `raytrace.py` | GPU ray tracer (Triton) with textures, sun and shadows |
-| `stiles.py` | tiles: camera rig, splats from the rig views, pruning |
+| `world.py` | the town: street grid, buildings, trees, lamps, benches, landmarks at crossings |
+| `routes.py` | home, destinations, routes through landmark crossings, street names |
+| `cityassets.py` | what each object's image is: key, prompt, size, kind |
+| `assetgen.py`, `assetgen.sh` | image generator service: Qwen-Image-2.1-Turbo FP8, cut-outs, seamless textures, facade crop |
+| `raytrace.py` | GPU ray tracer (Triton) with textures, alpha-tested cut-outs, sun and shadows |
+| `stiles.py` | tiles: camera rig, splats from the rig views (baked or WorldMirror), pruning |
 | `splatrender.py` | gsplat rendering |
-| `server.py` | tile store, walker, frame pipeline, WebSocket server |
-| `client/walk.html` | the page |
+| `server.py`, `run.sh` | tile store, walker, frame pipeline, WebSocket server, `/routes` |
+| `client/walk.html` | the page and the navigation panel |
 | `walk_test.py`, `evaltile.py` | headless walk and tile scoring |
+
+How to run: [../docs/USAGE.md](../docs/USAGE.md).
