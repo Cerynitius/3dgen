@@ -75,7 +75,7 @@ else:
 if args.no_assets:
     RT.TEXTURES = False
 else:
-    CACHE = CACHE.with_name(CACHE.name + f"_{CA.VERSION}_all")   # facades + props + ground generated
+    CACHE = CACHE.with_name(CACHE.name + f"_{CA.VERSION}_all_lamp")   # facades + props + ground generated
 CACHE.mkdir(parents=True, exist_ok=True)
 HOME = RO.home(args.seed)   # the walk starts on the sidewalk in front of home (training routes, routes.py)
 POS = [HOME["x"], HOME["z"]]          # last walker position (asset priorities)
