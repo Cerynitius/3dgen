@@ -32,7 +32,7 @@
 | `netpolicy.js` | deadlines, exponential backoff, cost-keyed refusal cache |
 | `geometry.js`, `collider3d.js`, `mat4.js`, `maze.js` | mesh building, collision, matrix maths, local generator |
 | `endless.html` | the page |
-| `live.html`, `live.js` | a mesh-rendered view of the same maze, for comparison with the splat path |
+| `live.html`, `live.js` | a mesh-rendered view of the same maze |
 
 ### Server
 
