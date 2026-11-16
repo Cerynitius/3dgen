@@ -37,14 +37,14 @@ def _tex_mips(seed, key):
             op = a[..., 3] > 127
             if op.any():
                 a[~op, :3] = a[op, :3].mean(0).astype(np.uint8)
-            alpha = np.asarray(Image.fromarray(a[..., 3]).resize((ALPHA_S, ALPHA_S), Image.BILINEAR))
+            alpha = np.array(Image.fromarray(a[..., 3]).resize((ALPHA_S, ALPHA_S), Image.BILINEAR))
             im = Image.fromarray(a[..., :3])
         else:
             im = im.convert("RGB")
             alpha = np.full((ALPHA_S, ALPHA_S), 255, np.uint8)
         out, S = [], TEX_S
         for _ in range(TEX_LEVELS):
-            out.append(np.asarray(im.resize((S, S), Image.BOX if S < TEX_S else Image.LANCZOS)))
+            out.append(np.array(im.resize((S, S), Image.BOX if S < TEX_S else Image.LANCZOS)))
             S //= 2
         if len(_TEX_CACHE) > 6000:
             _TEX_CACHE.pop(next(iter(_TEX_CACHE)))
@@ -233,10 +233,23 @@ class Scene:
         self.tex_keys = []
         self.quads = torch.zeros(0, 8, device=device)
         self.nq = 0
-        self.gi0, self.gj0 = math.floor(xmin / Wd.P) - 1, math.floor(zmin / Wd.P) - 1
-        ni, nj = math.floor(xmax / Wd.P) + 2 - self.gi0, math.floor(zmax / Wd.P) + 2 - self.gj0
+        # the street network of the window as tables: lines gi0 .. gi0+ni-1 (x) and gj0 .. gj0+nj-1 (z), cells
+        # between them, which segments exist, and the ground textures per segment / cell
+        self.gi0, self.gj0 = Wd.cell_of(1, xmin, seed) - 2, Wd.cell_of(0, zmin, seed) - 2
+        ni = Wd.cell_of(1, xmax, seed) + 3 - self.gi0
+        nj = Wd.cell_of(0, zmax, seed) + 3 - self.gj0
+        I, J = range(self.gi0, self.gi0 + ni), range(self.gj0, self.gj0 + nj)
+        ft = lambda v: torch.tensor(v, dtype=torch.float32, device=device)
+        self.LX, self.RX, self.HX = ft([Wd.lpos(1, i, seed) for i in I]), ft([Wd.lroad(1, i, seed) for i in I]), ft([Wd.lhw(1, i, seed) for i in I])
+        self.LZ, self.RZ, self.HZ = ft([Wd.lpos(0, j, seed) for j in J]), ft([Wd.lroad(0, j, seed) for j in J]), ft([Wd.lhw(0, j, seed) for j in J])
+        self.CX = torch.tensor([Wd.lcls(1, i, seed) for i in I], device=device)
+        self.CZ = torch.tensor([Wd.lcls(0, j, seed) for j in J], device=device)
+        self.S0 = torch.tensor([[Wd.seg(0, j, i, seed) for j in J] for i in I], device=device)   # [cell i, line j]
+        self.S1 = torch.tensor([[Wd.seg(1, i, j, seed) for j in J] for i in I], device=device)   # [line i, cell j]
+        self.BK = torch.tensor([[Wd.block_kind(i, j, seed) for j in J] for i in I], device=device)
         self.road_tid = torch.full((ni, nj, 2), -1, dtype=torch.long, device=device)
         self.walk_tid = torch.full((ni, nj), -1, dtype=torch.long, device=device)
+        self.inner_tid = torch.full((ni, nj), -1, dtype=torch.long, device=device)
         self.uses = {}
         if TEXTURES:
             add = lambda a, u: self.uses.setdefault(a["key"], []).append(u)
@@ -251,12 +264,15 @@ class Scene:
                 else:
                     for r in np.nonzero(boxk == pi)[0]:
                         add(a, ("box", int(r)))
-            for ii in range(ni):
-                for jj in range(nj):
+            for ii in range(ni - 1):
+                for jj in range(nj - 1):
                     i, j = ii + self.gi0, jj + self.gj0
-                    add(CA.road_asset(i, j, 0, seed), ("road", ii, jj, 0))
-                    add(CA.road_asset(i, j, 1, seed), ("road", ii, jj, 1))
+                    if Wd.seg(0, j, i, seed):
+                        add(CA.road_asset(i, j, 0, seed), ("road", ii, jj, 0))
+                    if Wd.seg(1, i, j, seed):
+                        add(CA.road_asset(i, j, 1, seed), ("road", ii, jj, 1))
                     add(CA.walk_asset(i, j, seed), ("walk", ii, jj))
+                    add(CA.inner_asset(i, j, seed), ("inner", ii, jj))
         self.refresh_textures()
 
     def refresh_textures(self):
@@ -266,16 +282,18 @@ class Scene:
             return 0
         levels = [[] for _ in range(TEX_LEVELS)]
         alphas, aspects = [], []
+        # each image goes to the device on its own and the atlas is stacked there: stacking hundreds of
+        # images in host memory first took up to 40 s per scene in a long-running build process
         for k in new:
             mips, al, asp = _tex_mips(self.seed, k)
             for L, a in enumerate(mips):
-                levels[L].append(torch.from_numpy(a.copy()))
-            alphas.append(torch.from_numpy(al.copy()).reshape(-1))
+                levels[L].append(torch.from_numpy(a).to(self.device))
+            alphas.append(torch.from_numpy(al).reshape(-1).to(self.device))
             aspects.append(asp)
-        add = [torch.stack(l).to(self.device) for l in levels]
+        add = [torch.stack(l) for l in levels]
         base = len(self.tex_keys)
         self.tex = add if self.tex is None else [torch.cat([a, b]) for a, b in zip(self.tex, add)]
-        al = torch.cat(alphas).to(self.device)
+        al = torch.cat(alphas)
         self.alpha = al if base == 0 else torch.cat([self.alpha, al])
         self.tex_keys += new
         quads, hide_b, hide_s = [], [], []
@@ -288,6 +306,8 @@ class Scene:
                     self.road_tid[u[1], u[2], u[3]] = t
                 elif u[0] == "walk":
                     self.walk_tid[u[1], u[2]] = t
+                elif u[0] == "inner":
+                    self.inner_tid[u[1], u[2]] = t
                 else:
                     pi = u[1]
                     pr = self.props[pi]
@@ -491,48 +511,64 @@ def shade_facade(p, n, prm, vd):
     return col
 
 
-def ground_photo(scene, x, z, road_x, road_z, walk, t, d):
-    """Generated material under each ground point (asphalt per street segment, paving per block), or -1 where
-    none is loaded yet. -> (colour [R,3], has [R])."""
-    P = Wd.P
-    ni, nj = scene.walk_tid.shape
-    ix, jz = torch.floor(x / P).long() - scene.gi0, torch.floor(z / P).long() - scene.gj0
-    ir, jr = torch.round(x / P).long() - scene.gi0, torch.round(z / P).long() - scene.gj0
+def street_net(scene, x, z):
+    """Where ground points lie in the street network: the cell (ci, cj, table indices), the nearest x-line and
+    z-line, distances to them, and whether the corridor / carriageway of the street along z (on the x-line) and of
+    the street along x (on the z-line) exist there."""
+    ni, nj = scene.LX.shape[0], scene.LZ.shape[0]
+    ci = (torch.searchsorted(scene.LX, x.contiguous(), right=True) - 1).clamp(0, ni - 2)
+    cj = (torch.searchsorted(scene.LZ, z.contiguous(), right=True) - 1).clamp(0, nj - 2)
+    da, db = x - scene.LX[ci], scene.LX[ci + 1] - x
+    kx = torch.where(da <= db, ci, ci + 1)
+    ax = torch.minimum(da, db).abs()
+    da, db = z - scene.LZ[cj], scene.LZ[cj + 1] - z
+    kz = torch.where(da <= db, cj, cj + 1)
+    az = torch.minimum(da, db).abs()
+    on_z = scene.S1[kx, cj]                 # the street along z on line kx runs past this point
+    on_x = scene.S0[ci, kz]
+    return dict(ci=ci, cj=cj, kx=kx, kz=kz, ax=ax, az=az,
+                road_z=on_z & (ax < scene.RX[kx]), corr_z=on_z & (ax < scene.HX[kx]),
+                road_x=on_x & (az < scene.RZ[kz]), corr_x=on_x & (az < scene.HZ[kz]))
 
-    def look(tab, a, b, *c):
-        ok = (a >= 0) & (a < ni) & (b >= 0) & (b < nj)
-        v = tab[a.clamp(0, ni - 1), b.clamp(0, nj - 1), *c] if c else tab[a.clamp(0, ni - 1), b.clamp(0, nj - 1)]
-        return torch.where(ok, v, torch.full_like(v, -1))
-    tid = torch.full_like(ix, -1)
-    tid = torch.where(walk, look(scene.walk_tid, ix, jz), tid)
-    tid = torch.where(road_z, look(scene.road_tid, ir, jz, 1), tid)
-    tid = torch.where(road_x, look(scene.road_tid, ix, jr, 0), tid)        # crossings: the x street's asphalt
+
+def ground_photo(scene, net, x, z, walk, inner, t, d):
+    """Generated material under each ground point (asphalt per street segment, paving per block side, the block's
+    own ground inside it), or -1 where none is loaded yet. -> (colour [R,3], has [R])."""
+    ci, cj, kx, kz = net["ci"], net["cj"], net["kx"], net["kz"]
+    road_x, road_z = net["road_x"], net["road_z"]
+    tid = torch.full_like(ci, -1)
+    tid = torch.where(inner, scene.inner_tid[ci, cj], tid)
+    tid = torch.where(walk, scene.walk_tid[ci, cj], tid)
+    tid = torch.where(road_z, scene.road_tid[kx, cj, 1], tid)
+    tid = torch.where(road_x, scene.road_tid[ci, kz, 0], tid)        # crossings: the x street's asphalt
     has = tid >= 0
     col = torch.zeros(x.shape[0], 3, device=x.device)
     if has.any():
         road = (road_x | road_z)[has]
-        per = torch.where(road, torch.full_like(x[has], CA.ROAD_PERIOD), torch.full_like(x[has], CA.PAVE_PERIOD))
+        per = torch.where(road, torch.full_like(x[has], CA.ROAD_PERIOD),
+                          torch.where(inner[has], torch.full_like(x[has], CA.INNER_PERIOD), torch.full_like(x[has], CA.PAVE_PERIOD)))
         # no anisotropic filtering: dividing by sqrt(cos) instead of cos keeps grazing ground sharp, a little aliased
         foot = t[has] * PIX_ANGLE / d[has][:, 1].abs().clamp(min=0.03).sqrt()
         lvl = _level(foot, per / TEX_S)
         xh, zh = x[has], z[has]
         c1 = _sample(scene, tid[has], xh / per, zh / per, lvl, wrap=True)
-        # asphalt: a second, rotated and rescaled layer blended by low-frequency noise hides the repeat
+        # asphalt and block grounds: a second, rotated and rescaled layer blended by low-frequency noise hides the repeat
         c2 = _sample(scene, tid[has], (zh * 0.77 + 0.31) / per, (-xh * 0.77 + 0.57) / per, lvl, wrap=True)
         w = _fbm(xh * 0.12, zh * 0.12, torch.full_like(xh, 5))[:, None].clamp(0, 1)
-        col[has] = torch.where(road[:, None], c1 * (1 - w) + c2 * w, c1) * TEX_GAIN
+        blend = (road | inner[has])[:, None]
+        col[has] = torch.where(blend, c1 * (1 - w) + c2 * w, c1) * TEX_GAIN
     return col, has
 
 
-def shade_ground(p, scene=None, t=None, d=None):
+def shade_ground(p, scene, t=None, d=None):
     x, z = p[:, 0], p[:, 2]
-    lx = torch.remainder(x + Wd.P / 2, Wd.P) - Wd.P / 2
-    lz = torch.remainder(z + Wd.P / 2, Wd.P) - Wd.P / 2
-    ax, az = lx.abs(), lz.abs()
-    road_x = az < Wd.ROAD          # street running along x
-    road_z = ax < Wd.ROAD
+    net = street_net(scene, x, z)
+    ax, az, kx, kz = net["ax"], net["az"], net["kx"], net["kz"]
+    road_x, road_z, corr_x, corr_z = net["road_x"], net["road_z"], net["corr_x"], net["corr_z"]
+    RX, HX, RZ, HZ = scene.RX[kx], scene.HX[kx], scene.RZ[kz], scene.HZ[kz]
     road = road_x | road_z
-    walk = ~road & ((az < Wd.HW) | (ax < Wd.HW))
+    walk = ~road & (corr_x | corr_z)
+    inner = ~corr_x & ~corr_z
     n = _fbm(x * 2.0, z * 2.0, torch.full_like(x, 11))
     asph = torch.stack([0.24 + 0.08 * n, 0.24 + 0.08 * n, 0.26 + 0.08 * n], -1)
     # sidewalk paving
@@ -541,27 +577,36 @@ def shade_ground(p, scene=None, t=None, d=None):
     tile = 0.62 + 0.12 * _hash3(torch.floor(x / 0.6), torch.floor(z / 0.6), torch.full_like(x, 3))
     pave = torch.stack([tile, tile * 0.97, tile * 0.92], -1)
     pave = torch.where(joint[:, None], pave * 0.75, pave)
-    curb = ~road & (((az > Wd.ROAD) & (az < Wd.ROAD + 0.22) & (ax > Wd.HW)) | ((ax > Wd.ROAD) & (ax < Wd.ROAD + 0.22) & (az > Wd.HW)))
+    curb = walk & ((corr_x & ~corr_z & (az > RZ) & (az < RZ + 0.22)) | (corr_z & ~corr_x & (ax > RX) & (ax < RX + 0.22)))
     pave = torch.where(curb[:, None], torch.full_like(pave, 0.80), pave)
     col = torch.where(road[:, None], asph, pave)
-    # block interiors (courtyards) never seen, but keep them plain
-    inner = ~road & ~walk
     col = torch.where(inner[:, None], torch.full_like(col, 0.4), col)
-    if scene is not None and scene.tex is not None:
-        gc, has = ground_photo(scene, x, z, road_x, road_z, walk & ~curb, t, d)
+    if scene.tex is not None:
+        gc, has = ground_photo(scene, net, x, z, walk & ~curb, inner, t, d)
         col = torch.where(has[:, None], gc, col)
     white = torch.full_like(col, 0.88)
     cross = road_x & road_z
-    # centre dashes
-    dash_x = road_x & ~road_z & (az < 0.08) & (torch.remainder(x, 6.0) < 3.0) & (ax > Wd.HW + 4)
-    dash_z = road_z & ~road_x & (ax < 0.08) & (torch.remainder(z, 6.0) < 3.0) & (az > Wd.HW + 4)
-    # zebra crossings on every arm, just outside the junction box
-    zeb_x = road_z & (az > Wd.HW + 0.3) & (az < Wd.HW + 3.3) & (torch.remainder(x + 0.25, 1.0) < 0.5)
-    zeb_z = road_x & (ax > Wd.HW + 0.3) & (ax < Wd.HW + 3.3) & (torch.remainder(z + 0.25, 1.0) < 0.5)
-    stop_x = road_z & ~cross & (az > Wd.HW + 3.6) & (az < Wd.HW + 3.9)
-    stop_z = road_x & ~cross & (ax > Wd.HW + 3.6) & (ax < Wd.HW + 3.9)
-    mark = dash_x | dash_z | zeb_x | zeb_z | stop_x | stop_z
+    lx_, lz_ = scene.CZ[kz], scene.CX[kx]       # class of the street along x / along z here
+    # centre lines away from the junctions: dashes on streets, a double line and lane dashes on avenues
+    far_x = road_x & ~corr_z & (ax > HX + 4)
+    far_z = road_z & ~corr_x & (az > HZ + 4)
+    dash_x = far_x & (lx_ == Wd.STREET) & (az < 0.08) & (torch.remainder(x, 6.0) < 3.0)
+    dash_z = far_z & (lz_ == Wd.STREET) & (ax < 0.08) & (torch.remainder(z, 6.0) < 3.0)
+    dbl_x = far_x & (lx_ == Wd.MAIN) & (az > 0.08) & (az < 0.22)
+    dbl_z = far_z & (lz_ == Wd.MAIN) & (ax > 0.08) & (ax < 0.22)
+    lane_x = far_x & (lx_ == Wd.MAIN) & ((az - RZ / 2).abs() < 0.07) & (torch.remainder(x, 9.0) < 4.0)
+    lane_z = far_z & (lz_ == Wd.MAIN) & ((ax - RX / 2).abs() < 0.07) & (torch.remainder(z, 9.0) < 4.0)
+    # zebra crossings and stop lines on every arm, just outside the junction box (not across lanes)
+    arm_x = road_x & ~road_z & (lx_ != Wd.LANE)          # on an arm of the street along x, near line kx
+    arm_z = road_z & ~road_x & (lz_ != Wd.LANE)
+    zeb_x = arm_x & (ax > HX + 0.3) & (ax < HX + 3.3) & (torch.remainder(z + 0.25, 1.0) < 0.5)
+    zeb_z = arm_z & (az > HZ + 0.3) & (az < HZ + 3.3) & (torch.remainder(x + 0.25, 1.0) < 0.5)
+    stop_x = arm_x & (ax > HX + 3.6) & (ax < HX + 3.9)
+    stop_z = arm_z & (az > HZ + 3.6) & (az < HZ + 3.9)
+    mark = dash_x | dash_z | dbl_x | dbl_z | lane_x | lane_z | zeb_x | zeb_z | stop_x | stop_z
     col = torch.where(mark[:, None], white * (0.9 + 0.1 * n[:, None]), col)
+    yellow = torch.stack([0.85 + 0.1 * n, 0.70 + 0.1 * n, 0.20 + 0.05 * n], -1)
+    col = torch.where((dbl_x | dbl_z)[:, None], yellow, col)
     return col
 
 
@@ -747,6 +792,15 @@ def render(tracer, c2w_m, K, W, H, shadows=True, chunk=1 << 19, normals=False, h
     if normals:
         return c.pow(1 / 1.15).clamp(0, 1), z, torch.cat(ns)[: W * H].reshape(H, W, 3)
     return c.pow(1 / 1.15).clamp(0, 1), z
+
+
+def enclosed_holes(alpha, thr=0.5):
+    """[..., H, W] splat coverage -> pixels left uncovered that have a covered pixel above them in their column.
+    The sky reaches down from the top of the image through uncovered pixels only, so this drops it without tracing
+    a ray; a hole in a wall or the ground has the wall or nearer ground above it."""
+    cov = alpha >= thr
+    above = torch.cummax(cov.to(torch.uint8), dim=-2).values.bool()
+    return ~cov & above
 
 
 def add_haze(img, depth, alpha=None):

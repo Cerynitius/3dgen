@@ -4,6 +4,6 @@
 set -e
 cd "$(dirname "$0")"
 git subtree pull -q --prefix=endless-labyrinth ~/endless-labyrinth main -m "Sync endless-labyrinth"
-rsync -a --delete --exclude cache/ --exclude assets_cache/ --exclude runs/ --exclude __pycache__/ --exclude '*.log' \
+rsync -a --delete --exclude cache/ --exclude assets_cache/ --exclude runs/ --exclude __pycache__/ --exclude '*.log' --exclude 'core.*' \
     ~/endless-streets/ endless-streets/
 git status --short

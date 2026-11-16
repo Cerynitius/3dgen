@@ -30,7 +30,7 @@ Run everything from `endless-streets/`.
 ### 2. Start the walk server
 
 ```bash
-./run.sh --build-gpus 1                                   # baked tiles, port 8095
+./run.sh --build-gpus 0,1                                 # baked tiles, port 8095
 PORT=8096 ./run.sh --recon worldmirror --build-gpus 1     # WorldMirror tiles, port 8096
 ```
 
@@ -44,6 +44,9 @@ PORT=8096 ./run.sh --recon worldmirror --build-gpus 1     # WorldMirror tiles, p
 | `--lod`, `--lod-dist` | `0.025,0.06,0.15`, `8,25` | voxel sizes of the three detail levels, and the distances (m) where they change |
 | `--no-fix` | off | no FastFix3D |
 | `--no-assets` | off | procedural looks only, no generated images |
+| `--no-holefill` | off | no hole patching while walking |
+| `--disc-gain` | `2.5` | size of the baked discs relative to the stored ones |
+| `--hole-stats` | off | count the hole pixels of every frame (also without patching) |
 
 Tiles are cached in `cache/` and generated images in `assets_cache/`, one directory per seed and setting.
 
@@ -63,7 +66,7 @@ Open `http://<host>:8095/` (or `:8096`) and click the picture to capture the mou
 | `N` | navigation panel on / off |
 | `Esc` | release the mouse |
 
-`GET /routes` returns the home, the routes and their steps as JSON.
+`GET /routes` returns the home, the routes and their steps as JSON; `GET /blocks?x=&z=` the block outlines within 300 m of a point, for the map.
 
 ## Endless Labyrinth
 
