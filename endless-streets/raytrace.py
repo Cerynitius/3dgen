@@ -197,12 +197,25 @@ def _hit_kernel(o_ptr, d_ptr, box_ptr, sph_ptr, qd_ptr, al_ptr, t_out, id_out, R
         u = (px - qx[None, :]) * ex[None, :] + (pz - qz[None, :]) * ez[None, :]
         hv = py - qy0[None, :]
         ok = (th > tmin_eps) & (tl.abs(u) <= hw[None, :]) & (hv >= 0) & (hv <= hh[None, :]) & mq[None, :] & (tl.abs(den) >= 1e-9)
-        iu = ((u / tl.maximum(hw[None, :], 1e-6) * 0.5 + 0.5) * AS).to(tl.int32)
-        iu = tl.minimum(tl.maximum(iu, 0), AS - 1)
-        iv = ((1.0 - hv / tl.maximum(hh[None, :], 1e-6)) * AS).to(tl.int32)
-        iv = tl.minimum(tl.maximum(iv, 0), AS - 1)
-        al = tl.load(al_ptr + qt[None, :] * (AS * AS) + iv * AS + iu, mask=ok, other=0)
-        ok = ok & (al > 127)
+        # bilinear alpha, then the 50 % test: the cut-out edge is a smooth contour, not the mask's texel squares
+        # (a canopy at arm's length showed 8 px blocks)
+        fu = (u / tl.maximum(hw[None, :], 1e-6) * 0.5 + 0.5) * AS - 0.5
+        fv = (1.0 - hv / tl.maximum(hh[None, :], 1e-6)) * AS - 0.5
+        u0 = tl.floor(fu)
+        v0 = tl.floor(fv)
+        wu = fu - u0
+        wv = fv - v0
+        iu0 = tl.minimum(tl.maximum(u0.to(tl.int32), 0), AS - 1)
+        iu1 = tl.minimum(tl.maximum(u0.to(tl.int32) + 1, 0), AS - 1)
+        iv0 = tl.minimum(tl.maximum(v0.to(tl.int32), 0), AS - 1)
+        iv1 = tl.minimum(tl.maximum(v0.to(tl.int32) + 1, 0), AS - 1)
+        base = al_ptr + qt[None, :] * (AS * AS)
+        a00 = tl.load(base + iv0 * AS + iu0, mask=ok, other=0).to(tl.float32)
+        a01 = tl.load(base + iv0 * AS + iu1, mask=ok, other=0).to(tl.float32)
+        a10 = tl.load(base + iv1 * AS + iu0, mask=ok, other=0).to(tl.float32)
+        a11 = tl.load(base + iv1 * AS + iu1, mask=ok, other=0).to(tl.float32)
+        al = (a00 * (1 - wu) + a01 * wu) * (1 - wv) + (a10 * (1 - wu) + a11 * wu) * wv
+        ok = ok & (al > 127.5)
         th = tl.where(ok, th, 1e30)
         cmin = tl.min(th, axis=1)
         carg = tl.argmin(th, axis=1)
@@ -651,8 +664,8 @@ def shade_misc(mat, p, n, prm):
 
 
 class Raytracer:
-    def __init__(self, scene):
-        self.s = scene
+    def __init__(self, scene, sky=True):
+        self.s, self.sky = scene, sky
 
     @torch.no_grad()
     def trace(self, o, d, shadows=True, want_depth=False, haze=True):
@@ -732,7 +745,8 @@ class Raytracer:
         if haze:
             hz = (1 - torch.exp(-torch.where(hit, t, torch.zeros_like(t)) / HAZE_M))[:, None]
             c = c * (1 - hz) + HORIZON.to(p.device) * hz
-        c = torch.where(hit[:, None], c, sky(d))
+        if self.sky:            # the near-field tracer leaves the sky to the walk frame, which has it already
+            c = torch.where(hit[:, None], c, sky(d))
         self.last_normal = n
         return c.clamp(0, 1), torch.where(hit, t, torch.full_like(t, float("inf"))), idx
 

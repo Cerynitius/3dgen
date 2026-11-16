@@ -46,6 +46,10 @@ PORT=8096 ./run.sh --recon worldmirror --build-gpus 1     # WorldMirror tiles, p
 | `--no-assets` | off | procedural looks only, no generated images |
 | `--no-holefill` | off | no hole patching while walking |
 | `--disc-gain` | `2.5` | size of the baked discs relative to the stored ones |
+| `--no-near` | off | splats only up close, no near-field layer |
+| `--near-gpu` | first build GPU that is not the walk GPU | card of the near-field tracer process |
+| `--near-m` | `6,9` | near-field layer at full weight up to the first depth (m), gone by the second |
+| `--near-every` | `1` | a new near-field view at most every N frames |
 | `--hole-stats` | off | count the hole pixels of every frame (also without patching) |
 
 Tiles are cached in `cache/` and generated images in `assets_cache/`, one directory per seed and setting.

@@ -65,6 +65,10 @@ ap.add_argument("--weights", default=os.path.expanduser("~/src/ultrafix/weights/
 ap.add_argument("--no-fix", action="store_true")
 ap.add_argument("--disc-gain", type=float, default=2.5, help="baked disc size relative to the stored one (0.3 of the pixel footprint)")
 ap.add_argument("--no-holefill", action="store_true", help="show the sky through splat holes (no patching while walking)")
+ap.add_argument("--no-near", action="store_true", help="splats only up close (no near-field layer traced from the generated images)")
+ap.add_argument("--near-gpu", type=int, default=None, help="card of the near-field tracer process (default: the first build GPU that is not the walk GPU)")
+ap.add_argument("--near-every", type=int, default=1, help="near-field layer: a new traced view at most every N frames")
+ap.add_argument("--near-m", default="6,9", help="near-field layer: full weight up to the first depth (m), gone by the second")
 ap.add_argument("--hole-stats", action="store_true", help="count hole pixels every frame (pipe.hole_px) also without patching")
 ap.add_argument("--recon", choices=("bake", "worldmirror"), default="bake",
                 help="bake: splats straight from the ray-traced rig pixels; worldmirror: the feed-forward model's splats")
@@ -392,6 +396,89 @@ class Patcher:
             return self._cat[1]
 
 
+class NearField:
+    """Up close the splats cannot hold the generated images (one splat per 2.5 cm voxel is 8 px at 2 m, and the walls
+    beside the pavement were seen only at grazing angles from the street), so FastFix3D gets a blur and has to guess:
+    shop signs and brickwork come out as plain walls, and the guess changes from frame to frame (flicker). A tracer
+    process (nearproc, on --near-gpu) ray-traces the town at the walker's latest pose straight from the generated
+    images; every frame warps the newest view to its own pose and puts it over the near pixels where the two
+    depths agree, before FastFix3D."""
+    def __init__(self, pipe):
+        from nearproc import NearTracer
+        self.pipe, self.cur, self.seq = pipe, None, 0
+        self.n0, self.n1 = (float(v) for v in args.near_m.split(","))
+        self.views, self.frames = 0, 0
+        # its own card: on the walk card the two processes take turns on the GPU and the frames slow down
+        bg = [int(g) for g in args.build_gpus.split(",") if g != "" and int(g) != args.walk_gpu]
+        gpu = args.near_gpu if args.near_gpu is not None else (bg[0] if bg else args.walk_gpu)
+        self.tracer = NearTracer(f"cuda:{gpu}", args.seed, K, W, H)
+
+    def request(self, c2w):
+        self.frames += 1
+        if self.frames % args.near_every == 0:
+            self.tracer.request(c2w)
+
+    def _fetch(self):
+        seq, v = self.tracer.latest()
+        if seq != self.seq and v is not None:
+            img, z, c2w = (torch.from_numpy(a).to(WD) for a in v)
+            self.cur = (img.float(), z, torch.linalg.inv(c2w))
+            self.seq = seq
+            self.views += 1
+
+    def apply(self, raw, depth, alpha, c2w_t, sky):
+        self._fetch()
+        cur = self.cur
+        if cur is None:
+            return raw
+        img, z, vm = cur
+        R = vm[:3, :3] @ c2w_t[:3, :3]
+        tr = vm[:3, :3] @ c2w_t[:3, 3] + vm[:3, 3]
+        def grid(q):
+            zq = q[..., 2].clamp(min=1e-3)
+            return torch.stack([(q[..., 0] / zq * K[0, 0] + K[0, 2]) / W * 2 - 1,
+                                (q[..., 1] / zq * K[1, 1] + K[1, 2]) / H * 2 - 1], -1)[None]
+        def sample(g):
+            # bicubic: a bilinear warp blurs by how far off the pixel grid the view lands, which changes with every
+            # new view and showed as a shimmer of sharpness
+            col = torch.nn.functional.grid_sample(img.permute(2, 0, 1)[None], g, mode="bicubic",
+                                                  align_corners=False)[0].permute(1, 2, 0).clamp(0, 1)
+            zr = torch.nn.functional.grid_sample(z[None, None], g, mode="nearest", align_corners=False)[0, 0]
+            return col, zr, g[0].abs().amax(-1) < 1
+        # surfaces: the splat depth is that of the disc centres, up to ~20 % off the surface up close at grazing angles
+        # and a mix of both sides at a near object's blurred edge; so it is only the start: the traced view's own
+        # depth where it lands gives the next depth (twice), and a pixel is kept where that has settled
+        Ri, pix = R.T, self.pipe.pix
+        d = depth
+        for _ in range(2):
+            q = (pix * d[..., None]) @ R.T + tr
+            g = grid(q)
+            zr = torch.nn.functional.grid_sample(z[None, None], g, mode="nearest", align_corners=False)[0, 0]
+            uu = (g[0, ..., 0] + 1) * 0.5 * W; vv = (g[0, ..., 1] + 1) * 0.5 * H
+            pn = torch.stack([(uu - K[0, 2]) / K[0, 0], (vv - K[1, 2]) / K[1, 1], torch.ones_like(uu)], -1) * zr[..., None]
+            dn = ((pn - tr) @ Ri.T)[..., 2]            # that traced point's depth in this frame
+            d_prev, d = d, torch.where(zr > 0, dn, torch.zeros_like(dn))
+        q = (pix * d[..., None]) @ R.T + tr
+        g = grid(q)
+        col, zr, inb = sample(g)
+        ok = (depth > 0) & (alpha > 0.3) & (d > 0.1) & inb & ((d - d_prev).abs() < 0.03 * d + 0.02) & \
+             ((zr - q[..., 2]).abs() < 0.03 * q[..., 2] + 0.03)
+        wgt = ok.float() * ((self.n1 - d) / (self.n1 - self.n0)).clamp(0, 1)
+        wgt = torch.nn.functional.avg_pool2d(wgt[None, None], 5, 1, 2)[0, 0] * ok.float()   # soft seams
+        depth = torch.where(ok, d, depth)
+        col = RT.add_haze(col, depth, (depth > 0).float())
+        # a near object's blur where the traced view sees only sky around both landing points (7x7: the lag shifts a
+        # pole's edge by a few px, which must not be cut off): a bloated canopy, the fringe of a passing pole
+        zany = torch.nn.functional.max_pool2d(z[None, None], 7, 1, 3)
+        gs = grid(self.pipe.pix @ R.T)
+        sky_s = torch.nn.functional.grid_sample(zany, gs, mode="nearest", align_corners=False)[0, 0] <= 0
+        sky_g = torch.nn.functional.grid_sample(zany, g, mode="nearest", align_corners=False)[0, 0] <= 0
+        fringe = (alpha > 0.02) & (depth < self.n1) & (gs[0].abs().amax(-1) < 1) & sky_s & (sky_g | (depth <= 0))
+        col = torch.where(fringe[..., None], sky, col)
+        wgt = torch.where(fringe, torch.ones_like(wgt), wgt)
+        return raw * (1 - wgt[..., None]) + col * wgt[..., None]
+
+
 # ------------------------------------------------------------------ walker
 class Walker:
     def __init__(self):
@@ -442,6 +529,7 @@ class Pipeline:
         ys = torch.arange(H, device=WD).float() + 0.5
         yy, xx = torch.meshgrid(ys, xs, indexing="ij")
         self.cam = torch.stack([(xx - K[0, 2]) / K[0, 0], (yy - K[1, 2]) / K[1, 1], torch.ones_like(xx)], -1).reshape(-1, 3)
+        self.pix = self.cam.reshape(H, W, 3).clone()          # camera point at z-depth 1 per pixel
         self.cam = torch.nn.functional.normalize(self.cam, dim=-1)
         self.fixer = None
         if not args.no_fix and Path(args.engine).exists():
@@ -455,6 +543,7 @@ class Pipeline:
         self.last_ref = None
         self.cat = None
         self.cat_keys = None
+        self.near = None if args.no_near else NearField(self)
 
     def scene_near(self, x, z, cur):
         """The ray tracer's window (260 m square) around the walker. A new one is built in a background thread once
@@ -610,6 +699,9 @@ class Pipeline:
         if PATCH is not None or args.hole_stats:
             self.find_holes(c2w_t, alpha)
         raw = img.clamp(0, 1)
+        if self.near is not None:
+            raw = self.near.apply(raw, depth, alpha, c2w_t.float(), sky).clamp(0, 1)
+            self.near.request(c2w)
         if view in (2, 4) and self.fixer is not None:
             key, (rimg, rdep, rvm, rK) = self.pick_ref(c2w)
             feat = self.fixer.features(depth, alpha, vm, self.Kt, rimg, rdep, rvm, rK, self.train)

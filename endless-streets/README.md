@@ -8,6 +8,7 @@
 - **Generated looks:** every facade (most with a shop sign), every ground, tree, lamp and piece of street furniture comes from Qwen-Image-2.1-Turbo while you walk; road markings and kerbs are drawn by code.
 - **Holes closed:** at tile build time from walker-like probe views (`stiles.py`), and while walking by a background patcher that turns traced hole pixels into splats (`server.py`).
 - **Same place every time:** the town and the routes are pure functions of the seed, and generated images are cached by key.
+- **Generated images up close:** a tracer process on its own card ray-traces the town at the walker's pose; every frame warps the newest view in for the pixels within 6–9 m whose depth agrees, before FastFix3D (`nearproc.py`, `server.py`).
 - **Views:** 3DGS render, FastFix3D, ray-traced ground truth, and render | FastFix3D side by side.
 
 ## Files
@@ -21,7 +22,8 @@
 | `raytrace.py` | GPU ray tracer (Triton) with textures, alpha-tested cut-outs, sun and shadows |
 | `stiles.py` | tiles: which squares are built, camera rig, splats from the rig views (baked or WorldMirror), pruning, hole patching |
 | `splatrender.py` | gsplat rendering |
-| `server.py`, `run.sh` | tile store, hole patcher, walker, frame pipeline, WebSocket server, `/routes`, `/blocks` |
+| `nearproc.py` | near-field tracer process (shared-memory views at the walker's pose) |
+| `server.py`, `run.sh` | tile store, hole patcher, near-field layer, walker, frame pipeline, WebSocket server, `/routes`, `/blocks` |
 | `client/walk.html` | the page and the navigation panel |
 | `walk_test.py`, `evaltile.py` | headless walk and tile scoring |
 
