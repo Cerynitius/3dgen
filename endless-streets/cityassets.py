@@ -65,48 +65,94 @@ BUCKETS = [(512, 1024), (576, 896), (640, 800), (704, 704), (832, 608), (896, 57
 B_ASPECT = np.array([w / h for w, h in BUCKETS])
 
 
-def _front_axis(x0, z0, x1, z1):
-    """0: the front faces +-x (street runs along z); 2: front faces +-z. A face is a street front when its plane
-    lies HW from a street centre line (multiples of P)."""
-    def on_street(a, b):
-        return min(abs(c - Wd.P * round(c / Wd.P)) for c in (a, b)) < Wd.HW + 0.05
-    fx, fz = on_street(x0, x1), on_street(z0, z1)
-    if fx and fz:
-        return 2 if (x1 - x0) >= (z1 - z0) else 0
-    return 0 if fx else 2
+def _front_axis(x0, z0, x1, z1, seed=0):
+    """0: the front faces +-x (its street runs along z); 2: the front faces +-z. A box on no street (compound slabs,
+    set-back towers) takes its longer side as the front."""
+    f = Wd.front_of(x0, z0, x1, z1, seed)
+    if f is not None:
+        return f[0]
+    return 2 if (x1 - x0) >= (z1 - z0) else 0
+
+
+MARKETS = ["福民", "惠丰", "金穗", "顺心", "康源", "永兴"]
+ROOFHOUSES = ["灰色水泥抹面的墙", "白色涂料的墙，墙面有雨水痕迹", "浅黄色涂料的墙", "灰白色瓷砖贴面的墙"]
+TANKS = ["不锈钢板拼成的方形水箱，表面有方格压纹", "蓝色玻璃钢方形水箱", "白色玻璃钢方形水箱，边上有检修爬梯",
+         "外表有些锈迹的旧铁皮方形水箱"]
+WALLS = ["白色粉刷墙面、顶上是灰色瓦片墙帽的围墙", "红砖砌的围墙，顶上有白色墙帽", "下半截是灰色石材、上半截是黑色铁艺栏杆的围墙",
+         "浅黄色涂料墙面、每隔几米有一根方形砖柱的围墙"]
+_PHOTO = ("相机正对墙面平视拍摄，没有透视变形，{}的左右两边和顶部边缘正好贴着画面边缘，画面里只有这一面墙，"
+          "没有天空、没有马路、没有相邻的建筑。")
+_DAY = "白天，阴天柔和光线，写实摄影，细节清晰。"
 
 
 def facade(box_row, prm_row, seed):
-    """Building box + params -> dict(key, prompt, w, h, gseed, axis)."""
-    x0, _, z0, x1, h, z1 = (float(v) for v in box_row[:6])
-    rx = [int(round(v * 100)) for v in (x0, z0, x1, z1)]
+    """Photo box + params -> dict(key, prompt, w, h, gseed, axis). What the photo shows follows the box's kind
+    (world.F_*): a street-front building (a shop or a unit door on the ground floor; the home and the destinations
+    of the training routes get their name plates), the upper part of a building above its podium, a residential slab
+    section, a school, a market hall section, a gatehouse; roof housings, water tanks and compound walls share a few
+    photos each."""
+    x0, y0, z0, x1, h, z1 = (float(v) for v in box_row[:6])
+    code = int(round(float(prm_row[6])))
+    kind, sd = code // Wd.FKIND, code % Wd.FKIND
+    axis = _front_axis(x0, z0, x1, z1, seed)
+    width = (x1 - x0) if axis == 2 else (z1 - z0)
+    height = h - y0
+    w, hh = BUCKETS[int(np.abs(np.log(B_ASPECT) - np.log(width / height)).argmin())]
+    srng = Wd.Rng(seed, 97, sd)
+    style = STYLES[srng.i(len(STYLES))]
+    if kind in (Wd.F_ROOFHOUSE, Wd.F_TANK, Wd.F_WALL):        # shared photos
+        v = sd % 4
+        k1, k2, key = _k(seed, 107, kind, v if kind != Wd.F_WALL else sd)
+        if kind == Wd.F_ROOFHOUSE:
+            prompt = (f"楼顶上一间小小的楼梯间的一面外墙的照片，{ROOFHOUSES[v]}，墙中间有一扇灰色铁门。"
+                      + _PHOTO.format("墙") + _DAY)
+        elif kind == Wd.F_TANK:
+            prompt = f"楼顶上一个{TANKS[v]}的侧面照片，水箱铺满整个画面，相机正对平视拍摄，没有天空、没有其他物体。" + _DAY
+        else:
+            prompt = (f"一段小区{WALLS[sd % len(WALLS)]}的正面照片，墙面铺满整个画面，相机正对平视拍摄，没有透视变形，"
+                      f"没有天空、没有地面、没有其他物体。" + _DAY)
+        return dict(key=key, prompt=prompt, w=w, h=hh, gseed=int(k1 ^ k2) & 0x7FFFFFFF, axis=axis)
+    rx = [int(round(v * 100)) for v in (x0, z0, x1, z1)] + ([int(round(y0 * 100))] if y0 > 0.5 else [])
     k1, k2 = Wd.h32(seed, *rx), Wd.h32(*rx, seed, 77)
     key = f"{k1:08x}{k2:08x}"
-    axis = _front_axis(x0, z0, x1, z1)
-    width = (x1 - x0) if axis == 2 else (z1 - z0)
-    floors = int((h - Wd.GF) / Wd.FH) + 1
     rng = Wd.Rng(k1, k2)
-    style = STYLES[rng.i(len(STYLES))]
-    import routes as RO                         # lazy: routes imports this module
-    sp = RO.special(seed).get(tuple(rx))
-    if sp is not None:                          # start / destination of the training routes: own key and sign
-        k1, k2 = Wd.h32(seed, *rx, 101), Wd.h32(*rx, seed, 103)
-        key = f"{k1:08x}{k2:08x}"
-        if sp[0] == "home":
-            ground = (f"一层正中是住宅小区的入口门洞，门洞上方挂着醒目的红底金字大牌匾，牌匾上写着“{sp[1]}”，"
-                      f"门洞旁边有门卫室的窗口")
-        else:
-            ground = f"一层是{sp[1]}，门头上方是醒目的大字招牌，招牌上写着“{sp[1]}”，{sp[2]}"
-    elif rng.u() < 0.15:
-        ground = "一层是单元门和几扇带防盗网的窗户，门边停着自行车"
+    floors = max(1, round(height / Wd.FH)) if y0 > 0.5 else int((h - Wd.GF) / Wd.FH) + 1
+    if kind == Wd.F_UPPER:
+        prompt = (f"一栋楼房上部{floors}层的正立面照片。" + _PHOTO.format("墙面")
+                  + f"{style}。这一段没有店铺和招牌，只有一排排窗户和阳台。" + _DAY)
+    elif kind == Wd.F_HOUSING:
+        prompt = (f"一栋{floors}层住宅楼的一段正立面照片。" + _PHOTO.format("这一段墙面")
+                  + f"{style}。一层是单元门和窗户，没有店铺和招牌。" + _DAY)
+    elif kind == Wd.F_SCHOOL:
+        prompt = (f"一栋{floors}层中学教学楼的一段正立面照片。" + _PHOTO.format("这一段墙面")
+                  + "白色和浅灰色的外墙，一排排整齐的大窗户，窗户里能看到教室的灯和窗帘。" + _DAY)
+    elif kind == Wd.F_MARKET:
+        name = MARKETS[(sd // 10) % len(MARKETS)] + "农贸市场"
+        sign = (f"中间是敞开的大门，大门上方是醒目的大字招牌，招牌上写着“{name}”" if sd % 10 == 0
+                else "墙上是一排高窗，下面是几扇卷帘门，门口摆着菜筐")
+        prompt = ("一座菜市场大棚的一段正面照片，彩钢板屋檐和浅色外墙，" + sign + "。" + _PHOTO.format("这一段墙面") + _DAY)
+    elif kind == Wd.F_GATEHOUSE:
+        prompt = ("小区大门旁边的门卫室的正面照片，一层小房子，浅色外墙，一扇推拉窗和一扇门，窗上贴着“门卫”两个字。"
+                  + _PHOTO.format("墙") + _DAY)
     else:
-        suf, desc = SHOPS[rng.i(len(SHOPS))]
-        name = PREFIX[rng.i(len(PREFIX))] + suf
-        ground = f"一层是一家店铺，门头招牌上写着“{name}”，{desc}"
-    prompt = (f"一栋{floors}层临街楼房的正立面照片。相机正对墙面平视拍摄，没有透视变形，楼的左右两边和楼顶边缘正好贴着画面边缘，"
-              f"画面里只有这一面墙，没有天空、没有马路、没有相邻的建筑。{style}。{ground}。"
-              f"白天，阴天柔和光线，写实摄影，细节清晰。")
-    w, hh = BUCKETS[int(np.abs(np.log(B_ASPECT) - np.log(width / h)).argmin())]
+        import routes as RO                         # lazy: routes imports this module
+        sp = RO.special(seed).get(tuple(rx[:4]))
+        if sp is not None:                          # start / destination of the training routes: own key and sign
+            k1, k2 = Wd.h32(seed, *rx[:4], 101), Wd.h32(*rx[:4], seed, 103)
+            key = f"{k1:08x}{k2:08x}"
+            if sp[0] == "home":
+                ground = (f"一层正中是住宅小区的入口门洞，门洞上方挂着醒目的红底金字大牌匾，牌匾上写着“{sp[1]}”，"
+                          f"门洞旁边有门卫室的窗口")
+            else:
+                ground = f"一层是{sp[1]}，门头上方是醒目的大字招牌，招牌上写着“{sp[1]}”，{sp[2]}"
+        elif rng.u() < 0.15:
+            ground = "一层是单元门和几扇带防盗网的窗户，门边停着自行车"
+        else:
+            suf, desc = SHOPS[rng.i(len(SHOPS))]
+            name = PREFIX[rng.i(len(PREFIX))] + suf
+            ground = f"一层是一家店铺，门头招牌上写着“{name}”，{desc}"
+        what = "临街楼房" if floors > 1 else "临街平房"
+        prompt = (f"一栋{floors}层{what}的正立面照片。" + _PHOTO.format("楼") + f"{style}。{ground}。" + _DAY)
     return dict(key=key, prompt=prompt, w=w, h=hh, gseed=int(k1 ^ k2) & 0x7FFFFFFF, axis=axis)
 
 
@@ -189,6 +235,55 @@ def prop_asset(pr, seed):
         prompt = f"一张竖版的社区宣传海报，标题大字写着“{title}”，配有插图和几行小字说明，海报铺满整个画面，平面设计。"
         return dict(key=key, prompt=prompt, w=512, h=1024, gseed=k1 & 0x7FFFFFFF, kind="plain",
                     label=f"“{title}”海报柱")
+    if kind == Wd.P_BUSSTOP:         # one per segment side, its name from the street
+        import routes as RO
+        stop = RO.street_name(ga, gb, seed) + "站"
+        k1, k2, key = _k(seed, 61, ga, gb, gc)
+        prompt = (f"城市街边一个公交车候车亭的正面照片，玻璃顶棚和不锈钢立柱，后面是透明玻璃挡板，里面有一条长椅，"
+                  f"一侧立着蓝色站牌，站牌上写着“{stop}”。" + _CUT.format("候车亭").replace("侧面", "正面"))
+        return dict(key="x" + key, prompt=prompt, w=896, h=576, gseed=k1 & 0x7FFFFFFF, kind="cutout", label=stop)
+    if kind == Wd.P_SHELTER_SIDE:    # the two side panels of a bus shelter share one photo
+        k1, k2, key = _k(seed, 69, ga, gb, gc)
+        prompt = ("城市街边公交车候车亭一端的侧面照片，一块竖立的透明玻璃侧挡板，上面是不锈钢立柱和一小段玻璃顶棚，"
+                  "挡板下部贴着一张蓝色的公交线路图。" + _CUT.format("候车亭的侧挡板"))
+        return dict(key="x" + key, prompt=prompt, w=576, h=896, gseed=k1 & 0x7FFFFFFF, kind="cutout")
+    if kind == Wd.P_TLIGHT:          # three designs for the whole town
+        v = Wd.h32(ga, gb) % 3
+        k1, k2, key = _k(seed, 57, v)
+        style = ["深灰色", "银灰色", "黑色"][v]
+        prompt = (f"一根完整的城市路口{style}交通信号灯杆，竖直灯杆顶端伸出一根横臂，横臂上挂着红黄绿三色信号灯，"
+                  f"灯杆中间装着一个人行横道信号灯，从地面上的底座到顶部都在画面内。"
+                  + _CUT.format("信号灯杆").replace("侧面平视", "正面平视"))
+        return dict(key="x" + key, prompt=prompt, w=512, h=1024, gseed=k1 & 0x7FFFFFFF, kind="cutout", label="红绿灯")
+    if kind == Wd.P_SIGN:            # one per crossing: the names of its two streets
+        import routes as RO
+        a_, b_ = RO.street_name(0, gb, seed), RO.street_name(1, ga, seed)
+        k1, k2, key = _k(seed, 59, ga, gb)
+        prompt = (f"一根完整的城市路口路名牌立柱，细长的灰色立柱顶端有两块互相垂直的蓝底白字路名牌，一块写着“{a_}”，"
+                  f"另一块写着“{b_}”，从地面上的底座到顶部都在画面内。" + _CUT.format("路名牌立柱").replace("侧面平视", "正面平视"))
+        return dict(key="x" + key, prompt=prompt, w=576, h=896, gseed=k1 & 0x7FFFFFFF, kind="cutout", label="路名牌")
+    if kind == Wd.P_BIN:             # three designs for the whole town
+        v = Wd.h32(ga, gb, gc) % 3
+        k1, k2, key = _k(seed, 63, v)
+        what = ["一个绿色写着“厨余垃圾”、一个灰色写着“其他垃圾”的两个并排的分类垃圾桶",
+                "一个蓝色写着“可回收物”、一个灰色写着“其他垃圾”的两个并排的分类垃圾桶",
+                "一个不锈钢外壳、分成左右两格的街边果皮箱"][v]
+        prompt = f"街边{what}的正面照片。" + _CUT.format("垃圾桶").replace("侧面", "正面")
+        return dict(key="x" + key, prompt=prompt, w=704, h=704, gseed=k1 & 0x7FFFFFFF, kind="cutout")
+    if kind == Wd.P_BIKES:           # four designs for the whole town
+        v = Wd.h32(ga, gb, gc, int(round(float(pr[1]))), int(round(float(pr[3])))) % 4
+        k1, k2, key = _k(seed, 65, v)
+        col = ["黄色", "蓝色", "绿色", "蓝白相间"][v]
+        prompt = (f"三辆并排停放的{col}共享单车的侧面照片，车头朝同一个方向，车身完整。"
+                  + _CUT.format("这几辆自行车"))
+        return dict(key="x" + key, prompt=prompt, w=896, h=576, gseed=k1 & 0x7FFFFFFF, kind="cutout")
+    if kind == Wd.P_PLANTER:         # four designs for the whole town
+        v = Wd.h32(ga, gb, gc, int(round(float(pr[1]))), int(round(float(pr[3])))) % 4
+        k1, k2, key = _k(seed, 67, v)
+        what = ["灰色石材砌的长条形花坛，里面种满红色和黄色的花", "白色石材的长条形花坛，里面种着修剪整齐的绿色灌木",
+                "深灰色花岗岩长条形花坛，里面种着紫色和白色的花", "木质外框的长条形花箱，里面种满月季花"][v]
+        prompt = f"街边一个{what}的正面照片。" + _CUT.format("花坛").replace("侧面", "正面")
+        return dict(key="x" + key, prompt=prompt, w=1024, h=448, gseed=k1 & 0x7FFFFFFF, kind="cutout")
     if kind == Wd.P_CLOCK:
         prompt = "一个方形街钟的钟面正面特写，白色表盘，黑色阿拉伯数字和指针，深绿色金属边框，钟面铺满整个画面，写实摄影。"
         return dict(key=key, prompt=prompt, w=704, h=704, gseed=k1 & 0x7FFFFFFF, kind="plain", label="街钟")
@@ -215,23 +310,32 @@ def prop_shape(pr, seed):
     if kind == Wd.P_LAMP:           # crossed planes along and across the street; height by design
         k1, k2, _ = _k(seed, 53, int(pr[8]), int(pr[9]), int(pr[10]))
         return 0.0, LAMP_H[Wd.Rng(k1, k2).i(len(LAMPS))], 0.0
-    if kind == Wd.P_BENCH:
-        return 0.0, None, float(pr[6])          # height follows the photo, width = the bench box
+    if kind in Wd.WIDTH_PROPS:
+        return 0.0, None, float(pr[6])          # height follows the photo, width = the prop's half width column
     return float(pr[2]), float(pr[4]), float(pr[6])
 
 
 # ------------------------------------------------------------------ ground: asphalt per street segment, paving per block
 ROADS = ["新铺的黑色细粒沥青", "颜色发灰、有细小裂缝的旧沥青", "带几块深色修补痕迹的沥青", "粗颗粒的深灰色沥青"]
+LANES = ["浅灰色的水泥路面，有细小的划痕", "有些旧的水泥路面，带几道修补的接缝", "灰色的细砂水泥路面"]
 PAVES = ["灰色30厘米方形水泥地砖", "红色和灰色相间的长方形透水砖", "人字形铺设的红砖", "浅灰色花岗岩石板",
          "六边形灰色水泥砖", "米黄色和灰色相间的方形地砖", "错缝铺设的深灰色长条石材"]
 ROAD_PERIOD, PAVE_PERIOD = 3.0, 2.0      # metres covered by one texture repeat
 
 
 def road_asset(i, j, ax, seed):
+    """Asphalt of a street segment (ax 0: the street along x on line z = Z(j), between x-lines i, i+1; ax 1: the
+    street along z on line x = X(i), between z-lines j, j+1). Lanes are concrete."""
     k1, k2, key = _k(seed, 43, i, j, ax)
-    v = ROADS[Wd.Rng(k1, k2).i(len(ROADS))]
-    prompt = (f"从正上方垂直向下拍摄的城市马路路面照片，{v}，画面约3米见方，纹理均匀铺满整个画面，"
-              f"没有车道线，没有井盖，没有阴影，没有任何物体，均匀的阴天光线，写实摄影。")
+    cls = Wd.lcls(0, j, seed) if ax == 0 else Wd.lcls(1, i, seed)
+    if cls == Wd.LANE:
+        v = LANES[Wd.Rng(k1, k2).i(len(LANES))]
+        prompt = (f"从正上方垂直向下拍摄的小巷路面照片，{v}，画面约3米见方，纹理均匀铺满整个画面，"
+                  f"没有井盖，没有阴影，没有任何物体，均匀的阴天光线，写实摄影。")
+    else:
+        v = ROADS[Wd.Rng(k1, k2).i(len(ROADS))]
+        prompt = (f"从正上方垂直向下拍摄的城市马路路面照片，{v}，画面约3米见方，纹理均匀铺满整个画面，"
+                  f"没有车道线，没有井盖，没有阴影，没有任何物体，均匀的阴天光线，写实摄影。")
     return dict(key="g" + key, prompt=prompt, w=704, h=704, gseed=k1 & 0x7FFFFFFF, kind="seamless")
 
 
@@ -243,14 +347,51 @@ def walk_asset(i, j, seed):
     return dict(key="g" + key, prompt=prompt, w=704, h=704, gseed=k1 & 0x7FFFFFFF, kind="seamless")
 
 
+INNERS = {Wd.B_PERIMETER: ["有些旧的灰色水泥地面", "灰色水泥地面，有几道伸缩缝", "铺着灰色方砖的后院地面"],
+          Wd.B_MARKET: ["有些旧的灰色水泥地面", "灰色水泥地面，有几道伸缩缝"],
+          Wd.B_PARK: ["修剪整齐的绿色草坪", "夹杂着少量三叶草的草坪", "绿色草坪，草叶细密"],
+          Wd.B_SQUARE: ["浅灰色花岗岩方形石板铺成的广场地面", "灰色和米黄色石材拼花铺成的广场地面", "红色和灰色相间的广场砖地面"],
+          Wd.B_COMPOUND: ["小区里铺着灰色方砖的地面", "小区里铺着红色透水砖的地面", "小区里浅灰色花岗岩地砖铺成的地面"],
+          Wd.B_SCHOOL: ["红色塑胶跑道的表面", "绿色人造草坪"]}
+INNER_PERIOD = 3.0
+
+
+def inner_asset(i, j, seed):
+    """Ground inside block (i, j), off the street corridors: courtyards, lawns, squares, school grounds. A few
+    designs per block kind, shared by the whole town."""
+    kind = Wd.block_kind(i, j, seed)
+    opts = INNERS[kind]
+    v = Wd.h32(seed, 71, i, j) % len(opts)
+    k1, k2, key = _k(seed, 73, kind, v)
+    prompt = (f"从正上方垂直向下拍摄的地面照片，{opts[v]}，画面约3米见方，纹理均匀铺满整个画面，"
+              f"没有阴影，没有任何物体，均匀的阴天光线，写实摄影。")
+    return dict(key="g" + key, prompt=prompt, w=704, h=704, gseed=k1 & 0x7FFFFFFF, kind="seamless")
+
+
+def ground_assets(i, j, seed):
+    """(asset, cx, cz) of the ground owned by cell (i, j): the asphalt of its two segments that exist, its
+    sidewalk paving and its inner ground."""
+    X0, X1, Z0, Z1 = Wd.lpos(1, i, seed), Wd.lpos(1, i + 1, seed), Wd.lpos(0, j, seed), Wd.lpos(0, j + 1, seed)
+    out = []
+    if Wd.seg(0, j, i, seed):
+        out.append((road_asset(i, j, 0, seed), (X0 + X1) / 2, Z0))
+    if Wd.seg(1, i, j, seed):
+        out.append((road_asset(i, j, 1, seed), X0, (Z0 + Z1) / 2))
+    out.append((walk_asset(i, j, seed), (X0 + X1) / 2, (Z0 + Z1) / 2))
+    out.append((inner_asset(i, j, seed), (X0 + X1) / 2, (Z0 + Z1) / 2))
+    return out
+
+
 def assets_in(xmin, xmax, zmin, zmax, seed, margin=0.0):
     """Everything generated for a rectangle: facades, props and ground, each with cx, cz for ordering."""
-    out = facades_in(xmin, xmax, zmin, zmax, seed, margin)
-    for f in out:
-        f["kind"] = "facade"
+    out, seen = [], set()
+    for f in facades_in(xmin, xmax, zmin, zmax, seed, margin):     # roof housings, tanks, walls share photos
+        if f["key"] not in seen:
+            seen.add(f["key"])
+            f["kind"] = "facade"
+            out.append(f)
     x0, x1, z0, z1 = xmin - margin, xmax + margin, zmin - margin, zmax + margin
     props = Wd.window(x0, x1, z0, z1, seed)[6]
-    seen = set()
     for pr in props:
         if not (x0 <= pr[1] <= x1 and z0 <= pr[3] <= z1):
             continue
@@ -259,13 +400,13 @@ def assets_in(xmin, xmax, zmin, zmax, seed, margin=0.0):
             seen.add(a["key"])
             a["cx"], a["cz"] = float(pr[1]), float(pr[3])
             out.append(a)
-    for i in range(math.floor(x0 / Wd.P), math.floor(x1 / Wd.P) + 1):
-        for j in range(math.floor(z0 / Wd.P), math.floor(z1 / Wd.P) + 1):
-            for a, cx, cz in ((road_asset(i, j, 0, seed), (i + 0.5) * Wd.P, j * Wd.P),
-                              (road_asset(i, j, 1, seed), i * Wd.P, (j + 0.5) * Wd.P),
-                              (walk_asset(i, j, seed), (i + 0.5) * Wd.P, (j + 0.5) * Wd.P)):
-                a["cx"], a["cz"] = cx, cz
-                out.append(a)
+    for i in range(Wd.cell_of(1, x0, seed), Wd.cell_of(1, x1, seed) + 1):
+        for j in range(Wd.cell_of(0, z0, seed), Wd.cell_of(0, z1, seed) + 1):
+            for a, cx, cz in ground_assets(i, j, seed):
+                if a["key"] not in seen:
+                    seen.add(a["key"])
+                    a["cx"], a["cz"] = cx, cz
+                    out.append(a)
     return out
 
 

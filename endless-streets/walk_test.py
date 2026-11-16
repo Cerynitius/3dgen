@@ -1,6 +1,7 @@
 """Headless walk: a fixed route through the town, timing per view and frames saved for inspection.
 usage: walk_test.py <out dir> [server args...]"""
 import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -17,8 +18,8 @@ torch.cuda.set_device(S.WD)
 pipe = S.Pipeline(S.store)
 S.pipe = pipe
 w = S.Walker()
-# route: walk north along x=0 through the crossing at (0,0), then turn east at (0,40) toward (30,40)
-route = [(0.0, -12.0 + 0.7 * k, 0.0) for k in range(75)] + [(0.7 * k, 40.5, math.pi / 2) for k in range(1, 45)]
+# route: from home north along the avenue x = 0 (on its east sidewalk) to the crossing near z = 42, then east
+route = [(8.75, -19.0 + 0.7 * k, 0.0) for k in range(87)] + [(8.75 + 0.7 * k, 42.5, math.pi / 2) for k in range(1, 45)]
 # warm-up: build everything the route needs
 need = set()
 for x, z, _ in route[::5]:
@@ -50,3 +51,4 @@ rows = [np.concatenate([res[1][i], res[2][i], res[3][i]], 1) for i in range(len(
 for i, r in enumerate(rows):
     Image.fromarray((r * 255).astype(np.uint8)).save(out / f"triple_{i}.jpg", quality=90)
 print(f"[walk_test] {len(rows)} triples -> {out}", flush=True)
+os._exit(0)     # daemon threads (tile workers, patcher) still hold CUDA work: a normal interpreter exit aborts

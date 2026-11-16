@@ -6,8 +6,8 @@
 
 The browser sends its input state over a WebSocket; the server moves the walker (with collision against the town)
 and streams frames back. Views: 1 3DGS render, 2 FastFix3D, 3 ground truth (ray tracer), 4 render | FastFix3D.
-GET /routes gives the training routes (routes.py) for the page's navigation panel; {"start": k} puts the walker
-back at the start of route k.
+GET /routes gives the training routes (routes.py) for the page's navigation panel, GET /blocks?x=&z= the block
+outlines around a point for its map; {"start": k} puts the walker back at the start of route k.
 
 usage: run.sh [--seed 0] [--walk-gpu 0] [--build-gpus 1] [--radius 3] [--recon bake|worldmirror] [--no-fix]
 """
@@ -28,6 +28,19 @@ import torch
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, os.path.expanduser("~/src/ultrafix/src"))
+
+# FastFix3D's smoother captures its per-frame step as a CUDA graph. In the default "global" capture mode any other
+# thread's allocation during the capture is an error, and the tile workers allocate all the time: capture in
+# "thread_local" mode so only the capturing thread is constrained.
+_cuda_graph = torch.cuda.graph
+
+
+class _thread_local_graph(_cuda_graph):
+    def __init__(self, cuda_graph, pool=None, stream=None, capture_error_mode="thread_local"):
+        super().__init__(cuda_graph, pool=pool, stream=stream, capture_error_mode=capture_error_mode)
+
+
+torch.cuda.graph = _thread_local_graph
 
 import raytrace as RT  # noqa: E402
 import splatrender as SR  # noqa: E402
@@ -50,6 +63,9 @@ ap.add_argument("--fov", type=float, default=90.0)
 ap.add_argument("--engine", default=str(HERE / "runs/fast_960x540.engine"))
 ap.add_argument("--weights", default=os.path.expanduser("~/src/ultrafix/weights/ultrafix_fast.safetensors"))
 ap.add_argument("--no-fix", action="store_true")
+ap.add_argument("--disc-gain", type=float, default=2.5, help="baked disc size relative to the stored one (0.3 of the pixel footprint)")
+ap.add_argument("--no-holefill", action="store_true", help="show the sky through splat holes (no patching while walking)")
+ap.add_argument("--hole-stats", action="store_true", help="count hole pixels every frame (pipe.hole_px) also without patching")
 ap.add_argument("--recon", choices=("bake", "worldmirror"), default="bake",
                 help="bake: splats straight from the ray-traced rig pixels; worldmirror: the feed-forward model's splats")
 ap.add_argument("--cache", default=str(HERE / "cache"))
@@ -62,6 +78,9 @@ WD = f"cuda:{args.walk_gpu}"
 BDS = [f"cuda:{g}" for g in args.build_gpus.split(",") if g != ""]
 LOD = [float(v) for v in args.lod.split(",")]
 LOD_D = [float(v) for v in args.lod_dist.split(",")]
+HOLE_ALPHA = 0.5       # pixels the splats cover less than this get the ray-traced town behind them
+HOLE_BUDGET = 8000     # hole rays per patch job at full resolution; above it a 2x / 4x coarser grid
+HOLE_MIN = 40          # fewer hole pixels than this are left to FastFix3D
 W, H = args.width, args.height
 K = RT.K_of(W, H, math.radians(args.fov))
 if args.recon == "bake":
@@ -75,7 +94,7 @@ else:
 if args.no_assets:
     RT.TEXTURES = False
 else:
-    CACHE = CACHE.with_name(CACHE.name + f"_{CA.VERSION}_all_lamp")   # facades + props + ground generated
+    CACHE = CACHE.with_name(CACHE.name + f"_{CA.VERSION}_net2")   # irregular network, everything generated
 CACHE.mkdir(parents=True, exist_ok=True)
 HOME = RO.home(args.seed)   # the walk starts on the sidewalk in front of home (training routes, routes.py)
 POS = [HOME["x"], HOME["z"]]          # last walker position (asset priorities)
@@ -95,8 +114,8 @@ class Assets:
     def tile_facades(self, t):
         if t not in self.tiles:
             o, h = ST.origin(*t), ST.TILE / 2
-            # a tile also owns half of each neighbouring block interior (stiles.owned)
-            self.tiles[t] = CA.assets_in(o[0] - h, o[0] + h, o[2] - h, o[2] + h, args.seed, margin=h + 0.5)
+            # a tile also owns the block interiors next to it (stiles.owned): what stands within a square of it
+            self.tiles[t] = CA.assets_in(o[0] - h, o[0] + h, o[2] - h, o[2] + h, args.seed, margin=ST.TILE + 0.5)
         return self.tiles[t]
 
     def demand(self):
@@ -203,15 +222,20 @@ class TileStore:
             o = torch.tensor(ST.origin(a, b), device=WD)
             gw = {k: g[k].to(WD).float() for k in ("means", "scales", "quats", "rgb", "opacity")}
             gw["means"] = gw["means"] + o
-            # one splat survives per voxel, so its disc must at least span the voxel or the surface shows gaps
+            # one splat survives per voxel, so its disc must at least span the voxel, and where the views saw the
+            # surface coarser than a voxel (far or grazing rig views) it is widened (baked discs are 0.3 of the
+            # pixel footprint; x2.5 closes the grid of gaps grazing walls showed, FastFix3D keeps the frame sharp)
             if args.recon == "bake":
-                gw["scales"][:, :2] = gw["scales"][:, :2].clamp(min=0.45 * LOD[0])
+                gw["scales"][:, :2] = torch.maximum(gw["scales"][:, :2] * args.disc_gain,
+                                                    torch.full_like(gw["scales"][:, :2], 0.45 * LOD[0]))
             levels = [gw] + [coarsen(gw, v, all_axes=args.recon != "bake") for v in LOD[1:]]
             rig = g["rig_c2w"].numpy().copy()
             rig[:, :3, 3] += ST.origin(a, b)
             with self.lock:
                 self.ready[t] = levels
                 self.rig[t] = rig
+            if PATCH is not None:
+                PATCH.drop(t)
             self.build_ms.append((time.perf_counter() - t0) * 1000)
 
     def drop_far(self, keep):
@@ -249,9 +273,123 @@ def coarsen(g, vs, all_axes=False):
 
 def ring(x, z, r):
     ca, cb = round(x / ST.TILE), round(z / ST.TILE)
-    out = [(ca + i, cb + j) for i in range(-r, r + 1) for j in range(-r, r + 1) if ST.kind(ca + i, cb + j) != "interior"]
+    out = [(ca + i, cb + j) for i in range(-r, r + 1) for j in range(-r, r + 1) if ST.built(ca + i, cb + j, args.seed)]
     out.sort(key=lambda t: (t[0] * ST.TILE - x) ** 2 + (t[1] * ST.TILE - z) ** 2)
     return out
+
+
+# ------------------------------------------------------------------ holes seen while walking
+class Patcher:
+    """Holes the walk frames show (pixels the splats leave uncovered, with cover above them in their column, so not
+    the sky) are traced once in a background thread on the build GPU against the town, and what the rays hit becomes
+    surface-aligned splats added to the frame's splats -- holes are fixed in world space, so a hole closes a frame
+    or two after it first shows and costs nothing afterwards. Rays into voxels already patched are skipped; a
+    square's patches go when its tile arrives (it has its own, built offline: stiles.patch_holes)."""
+    VOX = 0.05
+
+    def __init__(self):
+        self.dev = BDS[0] if BDS else WD
+        self.cv = threading.Condition()
+        self.job, self.busy = None, False
+        self.parts = []                 # (square ids [N,2] on the walk GPU, splat dict on the walk GPU)
+        self.version = 0
+        self.vox = None
+        self.scene = None
+        self._cat = (None, None)
+        threading.Thread(target=self._worker, daemon=True).start()
+
+    def submit(self, pos, dirs, foot):
+        """pos [3] and dirs [N,3] (world, unit) of hole rays; foot: pixel footprint per metre of depth."""
+        with self.cv:
+            if self.busy or self.job is not None:
+                return False
+            self.job = (pos.detach().clone(), dirs.detach().clone(), float(foot))
+            self.busy = True
+            self.cv.notify()
+        return True
+
+    def _worker(self):
+        torch.cuda.set_device(self.dev)
+        while True:
+            with self.cv:
+                while self.job is None:
+                    self.cv.wait()
+                job, self.job = self.job, None
+            try:
+                self._run(*job)
+            except Exception as e:
+                print(f"[patch] {type(e).__name__}: {e}", flush=True)
+            finally:
+                with self.cv:
+                    self.busy = False
+
+    def _run(self, pos, dirs, foot):
+        x, z = float(pos[0]), float(pos[2])
+        sc = self.scene
+        if sc is None or abs(sc.cx - x) > 25 or abs(sc.cz - z) > 25:
+            sc = RT.Scene(x - 130, x + 130, z - 130, z + 130, seed=args.seed, device=self.dev)
+            sc.cx, sc.cz, sc.t_refresh = x, z, time.time()
+            self.scene = sc
+        elif time.time() - sc.t_refresh > 5.0:
+            sc.refresh_textures()
+            sc.t_refresh = time.time()
+        d = dirs.to(self.dev).contiguous()
+        o = pos.to(self.dev).expand_as(d).contiguous()
+        t, _ = sc.intersect(o, d)
+        hit = torch.isfinite(t)
+        d, o, t = d[hit], o[hit], t[hit]
+        if not d.shape[0]:
+            return
+        q = torch.floor((o + d * t[:, None]) / self.VOX).long()
+        key = (q[:, 0] * 73856093) ^ (q[:, 1] * 19349663) ^ (q[:, 2] * 83492791)
+        if self.vox is not None:
+            new = ~torch.isin(key, self.vox)
+            d, o, key = d[new], o[new], key[new]
+            if not d.shape[0]:
+                return
+        tr = RT.Raytracer(sc)
+        c, t, _ = tr.trace(o, d, shadows=True, haze=False)
+        ok = torch.isfinite(t)
+        d, o, t, key, nrm, c = d[ok], o[ok], t[ok], key[ok], tr.last_normal[ok], c[ok].pow(1 / 1.15)
+        p = o + d * t[:, None]
+        r = t * foot
+        cosv = (d * nrm).sum(-1).abs().clamp(min=0.25)
+        s1 = torch.maximum(r * 0.6, torch.full_like(r, 0.5 * LOD[0]))[:, None]
+        scales = torch.cat([s1 / cosv[:, None], s1, (r * 0.08)[:, None]], 1)
+        xax = torch.nn.functional.normalize(d - (d * nrm).sum(-1, keepdim=True) * nrm + 1e-6, dim=-1)
+        quats = ST._quat_from_mats(torch.stack([xax, torch.cross(nrm, xax, dim=-1), nrm], -1))
+        g, _ = ST._sharpest_per_voxel([p, scales, quats, c, torch.full((p.shape[0],), 0.95, device=p.device), r / cosv],
+                                      LOD[0])
+        part = {k: v.to(WD).float().contiguous() for k, v in zip(("means", "scales", "quats", "rgb", "opacity"), g)}
+        sq = torch.stack([torch.round(part["means"][:, 0] / ST.TILE), torch.round(part["means"][:, 2] / ST.TILE)], -1).long()
+        with self.cv:
+            self.parts.append((sq, part))
+            self.vox = key.unique() if self.vox is None else torch.cat([self.vox, key]).unique()
+            n = sum(pp["means"].shape[0] for _, pp in self.parts)
+            while n > 600_000 and len(self.parts) > 1:     # oldest first
+                n -= self.parts.pop(0)[1]["means"].shape[0]
+            self.version += 1
+
+    def drop(self, t):
+        """Tile t has arrived: the patches in its square are its own business now."""
+        with self.cv:
+            out = []
+            for sq, part in self.parts:
+                keep = ~((sq[:, 0] == t[0]) & (sq[:, 1] == t[1]))
+                if keep.all():
+                    out.append((sq, part))
+                elif keep.any():
+                    out.append((sq[keep], {k: v[keep] for k, v in part.items()}))
+            if len(out) != len(self.parts) or any(a[0].shape[0] != b[0].shape[0] for a, b in zip(out, self.parts)):
+                self.parts = out
+                self.version += 1
+
+    def cat(self):
+        with self.cv:
+            if self._cat[0] != self.version:
+                self._cat = (self.version, {k: torch.cat([p[k] for _, p in self.parts]) for k in
+                                            ("means", "scales", "quats", "rgb", "opacity")} if self.parts else None)
+            return self._cat[1]
 
 
 # ------------------------------------------------------------------ walker
@@ -319,10 +457,34 @@ class Pipeline:
         self.cat_keys = None
 
     def scene_near(self, x, z, cur):
-        if cur is None or abs(cur.cx - x) > 40 or abs(cur.cz - z) > 40:
-            cur = RT.Scene(x - 130, x + 130, z - 130, z + 130, seed=args.seed, device=WD)
-            cur.cx, cur.cz = x, z
-            cur.t_refresh = time.time()
+        """The ray tracer's window (260 m square) around the walker. A new one is built in a background thread once
+        the walker is 25 m from the current centre, and swapped in when ready; the current one still reaches 105 m
+        ahead, so frames never wait for a rebuild (it takes seconds). Only a first call, or a jump far outside the
+        window (a route restart), builds in the frame."""
+        def build(x, z):
+            sc = RT.Scene(x - 130, x + 130, z - 130, z + 130, seed=args.seed, device=WD)
+            sc.cx, sc.cz, sc.t_refresh = x, z, time.time()
+            return sc
+        nxt = getattr(self, "_scene_next", None)
+        if nxt is not None and nxt["done"].is_set():
+            self._scene_next = None
+            if nxt["scene"] is not None:
+                cur = nxt["scene"]
+        if cur is None or abs(cur.cx - x) > 100 or abs(cur.cz - z) > 100:
+            return build(x, z)
+        if (abs(cur.cx - x) > 25 or abs(cur.cz - z) > 25) and getattr(self, "_scene_next", None) is None:
+            job = {"done": threading.Event(), "scene": None}
+
+            def run(job=job, x=x, z=z):
+                try:
+                    torch.cuda.set_device(WD)
+                    job["scene"] = build(x, z)
+                    torch.cuda.synchronize()
+                except Exception as e:
+                    print(f"[scene] {type(e).__name__}: {e}", flush=True)
+                job["done"].set()
+            self._scene_next = job
+            threading.Thread(target=run, daemon=True).start()
         elif time.time() - cur.t_refresh > 2.0:
             cur.refresh_textures()
             cur.t_refresh = time.time()
@@ -336,7 +498,7 @@ class Pipeline:
             choice = []
             for t in self.store.ready:
                 ox, oz = t[0] * ST.TILE, t[1] * ST.TILE
-                h = ST.TILE      # owned area reaches half a tile into the block interiors (stiles.owned)
+                h = 1.5 * ST.TILE    # owned area reaches into the block interiors (stiles.owned)
                 dx = max(abs(walker.x - ox) - h, 0.0)
                 dz = max(abs(walker.z - oz) - h, 0.0)
                 d = math.hypot(dx, dz)
@@ -354,9 +516,14 @@ class Pipeline:
                 lvl = 0 if dl < LOD_D[0] else (1 if dl < LOD_D[1] else 2)
                 choice.append((t, lvl))
             choice = tuple(sorted(choice))
-            if choice != self.cat_keys:
-                self.cat = {k: torch.cat([self.store.ready[t][l][k] for t, l in choice]) for k in ("means", "scales", "quats", "rgb", "opacity")} if choice else None
-                self.cat_keys = choice
+            pv = PATCH.version if PATCH is not None else -1
+            if (choice, pv) != self.cat_keys:
+                parts = [self.store.ready[t][l] for t, l in choice]
+                pc = PATCH.cat() if PATCH is not None else None
+                if pc is not None:
+                    parts.append(pc)
+                self.cat = {k: torch.cat([p[k] for p in parts]) for k in ("means", "scales", "quats", "rgb", "opacity")} if parts else None
+                self.cat_keys = (choice, pv)
             keys = tuple(sorted(self.store.ready))
             if keys != getattr(self, "rig_set", None):
                 self.rig_set = keys
@@ -392,6 +559,26 @@ class Pipeline:
                 self.refs.pop(next(iter(self.refs)))
         return key, self.refs[key]
 
+    def find_holes(self, c2w_t, alpha):
+        """Hand the frame's holes to the patcher (one ray per hole pixel, or per 2x2 / 4x4 cell when there are many)."""
+        hole = RT.enclosed_holes(alpha, HOLE_ALPHA)
+        n = int(hole.sum())
+        self.hole_px = n
+        if args.hole_stats and n and self.ref_scene is not None:     # holes whose ray really hits the town
+            d = (self.cam[hole.reshape(-1)] @ c2w_t[:3, :3].T).contiguous()
+            t, _ = self.ref_scene.intersect(c2w_t[:3, 3].expand_as(d).contiguous(), d)
+            self.hole_px = int(torch.isfinite(t).sum())
+        if n < HOLE_MIN or PATCH is None or PATCH.busy:
+            return
+        st = 1 if n <= HOLE_BUDGET else (2 if n <= 4 * HOLE_BUDGET else 4)
+        cam = self.cam.reshape(H, W, 3)
+        if st > 1:
+            cell = hole.reshape(H // st, st, W // st, st).any(3).any(1)
+            cam_r = cam[st // 2::st, st // 2::st][: H // st, : W // st].reshape(-1, 3)[cell.reshape(-1)]
+        else:
+            cam_r = self.cam[hole.reshape(-1)]
+        PATCH.submit(c2w_t[:3, 3], cam_r @ c2w_t[:3, :3].T, st / float(K[0, 0]))
+
     def _sky(self, c2w_t):
         d = self.cam @ c2w_t[:3, :3].T
         return RT.sky(d).reshape(H, W, 3).pow(1 / 1.15)
@@ -406,15 +593,22 @@ class Pipeline:
         g = self.splats(walker)
         sky = self._sky(c2w_t)
         if view == 3 or g is None:
-            self.gt_scene = self.scene_near(walker.x, walker.z, self.gt_scene)
-            img, z = RT.render(RT.Raytracer(self.gt_scene), c2w, K, W, H, haze=False, ss=1)
+            self.ref_scene = self.scene_near(walker.x, walker.z, self.ref_scene)      # one window for all uses
+            img, z = RT.render(RT.Raytracer(self.ref_scene), c2w, K, W, H, haze=False, ss=1)
             img = RT.add_haze(img, z, (z > 0).float())
             img = torch.where((z > 0)[..., None], img, sky)
             out["img"] = img
             return out, (time.perf_counter() - t0) * 1000, None
         img, depth, alpha = SR.render(g, vm, self.Kt, W, H)
-        img = img + (1 - alpha[..., None]) * sky
-        img = RT.add_haze(img, depth, alpha)
+        hz = (1 - torch.exp(-depth / RT.HAZE_M))[..., None] * (alpha[..., None] > 0)
+        img = img * (1 - hz) + RT.HORIZON.to(img.device).pow(1 / 1.15) * hz * alpha[..., None]
+        # a surface the splats cover almost fully is renormalised by its coverage instead of mixed with the sky: the
+        # thin gaps between discs (grazing views, dark facades) otherwise show as a bright grid of sky
+        a3 = alpha[..., None]
+        w = ((a3 - 0.5) / 0.4).clamp(0, 1)
+        img = (img + (1 - a3) * sky) * (1 - w) + img / a3.clamp(min=1e-3) * w
+        if PATCH is not None or args.hole_stats:
+            self.find_holes(c2w_t, alpha)
         raw = img.clamp(0, 1)
         if view in (2, 4) and self.fixer is not None:
             key, (rimg, rdep, rvm, rK) = self.pick_ref(c2w)
@@ -437,6 +631,7 @@ from torchvision.io import encode_jpeg  # noqa: E402
 
 store = TileStore()
 ASSETS = None if args.no_assets else Assets(store)
+PATCH = None if args.no_holefill else Patcher()
 pipe = None
 
 
@@ -446,6 +641,11 @@ async def index(_):
 
 async def routes_json(_):
     return web.json_response(RO.public(args.seed))
+
+
+async def blocks_json(request):
+    x, z = float(request.query.get("x", 0)), float(request.query.get("z", 0))
+    return web.json_response(RO.blocks(x, z, 300.0, args.seed))
 
 
 async def ws_handler(request):
@@ -520,6 +720,7 @@ def main():
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/routes", routes_json)
+    app.router.add_get("/blocks", blocks_json)
     print(f"[walk] http://0.0.0.0:{args.port}/  walk {WD}, build {BDS}, fix={'on' if pipe.fixer else 'off'}", flush=True)
     web.run_app(app, port=args.port, print=None)
 

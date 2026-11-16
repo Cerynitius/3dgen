@@ -210,6 +210,7 @@ function lmChar(label) {
   return ['树', '#2e7d32'];
 }
 
+let BL = [], blAt = null, blBusy = false;   // block outlines from /blocks, the point they were fetched for
 function drawMap(x, z, yaw, s) {
   const c = $('map'), g = c.getContext('2d'), S = 2;            // canvas is 2x the css size
   const cw = 300, ch = 300, ox = 150, oy = 200, k = 2.1;           // px per metre (300 px ~ 140 m)
@@ -217,12 +218,18 @@ function drawMap(x, z, yaw, s) {
   const T = (px, pz) => { const dx = px - x, dz = pz - z; return [ox + k*(dx*rx + dz*rz), oy - k*(dx*fx + dz*fz)]; };
   g.setTransform(S, 0, 0, S, 0, 0);
   g.fillStyle = '#ffffff'; g.fillRect(0, 0, cw, ch);              // streets are the white background
-  const P = W.P, HW = W.HW, span = 150 / k + P;
-  const i0 = Math.floor((x - span) / P), i1 = Math.floor((x + span) / P), j0 = Math.floor((z - span) / P), j1 = Math.floor((z + span) / P);
-  g.fillStyle = '#e3e0d6'; g.strokeStyle = '#d2cec2'; g.lineWidth = 1;
-  for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {   // blocks
-    const a = T(i*P + HW, j*P + HW), b = T((i+1)*P - HW, j*P + HW), cc = T((i+1)*P - HW, (j+1)*P - HW), d = T(i*P + HW, (j+1)*P - HW);
-    g.beginPath(); g.moveTo(...a); g.lineTo(...b); g.lineTo(...cc); g.lineTo(...d); g.closePath(); g.fill(); g.stroke();
+  // blocks: the street network is irregular, so the server sends the block outlines around the walker
+  if (!blBusy && (!blAt || Math.hypot(x - blAt[0], z - blAt[1]) > 120)) {
+    blBusy = true;
+    fetch(`/blocks?x=${x.toFixed(1)}&z=${z.toFixed(1)}`).then(r => r.json())
+      .then(j => { BL = j; blAt = [x, z]; }).finally(() => { blBusy = false; });
+  }
+  g.fillStyle = '#e3e0d6';
+  for (const [x0, z0, x1, z1] of BL) {      // two cells joined by a missing street touch and read as one block
+    if (Math.max(Math.abs(x0 - x), Math.abs(x1 - x)) > 160 && (x0 - x) * (x1 - x) > 0) continue;
+    if (Math.max(Math.abs(z0 - z), Math.abs(z1 - z)) > 160 && (z0 - z) * (z1 - z) > 0) continue;
+    const a = T(x0, z0), b = T(x1, z0), cc = T(x1, z1), d = T(x0, z1);
+    g.beginPath(); g.moveTo(...a); g.lineTo(...b); g.lineTo(...cc); g.lineTo(...d); g.closePath(); g.fill();
   }
   // route: travelled part grey, the rest blue with a white edge
   const line = (from, to, col, w) => {
